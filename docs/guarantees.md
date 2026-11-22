@@ -46,6 +46,7 @@ Two limits on these guarantees:
    cause from timing alone for a single event or a slow shift, and doesn't count exposure
    without a "before".
 8. **Redact before anything leaves.** Keep text only if you may: without it, nothing can be
-   relabeled or backtested.
+   relabeled or backtested. Notices quote stored text, already redacted; `examples: 0` quotes
+   none.
 9. **Not knowing is not the same as being clear.** Too little data never resolves an alert, an
    unanswered event is never stored as a no, and a sink that failed is still owed.

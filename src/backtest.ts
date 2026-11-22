@@ -6,7 +6,7 @@ import type { LabelFailure, LabelOptions, Labeler } from "./labeler.ts";
 import { count, series, viewOf } from "./metrics.ts";
 import { replay } from "./monitor.ts";
 import type { Alert, AlertGroup, RunnerOptions } from "./monitor.ts";
-import { defineSchema } from "./schema.ts";
+import { defineSchema, parseSignal } from "./schema.ts";
 import type { Question, Schema } from "./schema.ts";
 import type { Counts } from "./stats.ts";
 import { DAY, WEEK } from "./types.ts";
@@ -35,8 +35,8 @@ export const relabel = async (events: readonly LabeledEvent[], schema: Schema, l
   return { ...(await labelAll(withText.map(textOf), schema, labeler, options)), skipped: events.length - withText.length };
 };
 
-/** The question a signal key belongs to: `area` for `area=login`, `frustration>=2` and `area.second`. */
-const questionOf = (signal: string): string => signal.split(/[=>.]/)[0]!;
+/** The question a stored signal key belongs to: `area` for `area=login`, `area>=2` and `area.second`. */
+const questionOf = (signal: string): string => parseSignal(signal)[0]!.question;
 
 /**
  * Moves stored events to a new version of their schema without asking everything again. A

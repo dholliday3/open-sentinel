@@ -47,6 +47,8 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
 - Join two keys with `&` for "both are yes": `is_bug_report&area=login`. `both(a, b)` makes
   every pair.
 - `*` is the signal every event has. Counting it counts events.
+- `parseSignal` splits a key into its parts (question, option, level, second reading);
+  `describeSignal(schema, key)` reads it back in the schema's words, as notices do.
 - A yes/no question is yes at 0.5 unless it has its own `gate`, or you pass fitted `gates`.
   Gates passed to `createWatch` are added to the schema's own; they don't replace them.
 - `state` chooses what the labeler sees: by default the event's `context` plus its text as
@@ -155,6 +157,14 @@ Run these before trusting a number, and again when the labeler's version changes
   (`signal.<key>`), each tag its own attribute. Text is left out unless `includeText` is set.
 - `webhookSink`: POSTs `{ notices }`, and `{ events }` with `events: true`.
 - `jsonlSink`: appends every event and notice to a file. `consoleSink`: one line per notice.
+
+Every notice carries `schema` (`<name>@<version>`) and `question`, the alert's signal in the
+schema's own words. A fired notice also carries up to three `examples`, `{ id, at, text }`: for
+a one-event alert the event itself, otherwise the surest yeses in the alert's window, one per
+customer. Their text is as stored, so after `redact`, and absent when text isn't kept.
+`createWatch({ examples: 0 })` keeps message text out of notices altogether. `webhookSink` and
+`jsonlSink` pass all of it on; `otlpSink` sends the question and the examples' ids, and their
+text only with `includeText`.
 
 ## Investigation
 

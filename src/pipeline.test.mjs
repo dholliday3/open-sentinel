@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { redactBasics } from "./labeler.ts";
 import { ruleLabeler } from "./labelers/rules.ts";
 import { eventMonitor, shareMonitor } from "./monitors.ts";
 import { createPipeline, createWatch } from "./pipeline.ts";
@@ -291,4 +292,39 @@ test("a cron job that fires twice in one step sends notices with the same ids, s
   // The next step's alert is another one.
   const fresh = memoryStore({ events: incident(10) });
   assert.equal((await createWatch({ schema, store: fresh, monitors: [share()] }).tick(at + HOUR)).notices[0].alert.id, `3h share of bug@${at + HOUR}`);
+});
+
+test("a fired notice carries the question, the schema and up to three messages behind it, one per customer", async () => {
+  // Forty customers; in the incident one of them writes a bug report every few minutes.
+  const events = incident(10).map((event, i) => ({ ...event, unit: `account-${i % 40}` }));
+  const loud = Array.from({ length: 12 }, (_, i) => ({ id: `loud${i}`, at: START + i * 60_000, text: `still broken ${i}`, unit: "account-loud", schema: schema.id, labeler: "test-labeler@1", probability: "native", signals: { bug: 0.99 } }));
+  const store = memoryStore({ events: [...events, ...loud] });
+  const { notices, sink } = collect();
+  const watch = createWatch({ schema, store, monitors: [share()], rearmMs: { page: HOUR }, sinks: [sink] });
+  for (let now = START; now <= START + 12 * HOUR; now += HOUR) {
+    await watch.tick(now);
+  }
+  const [fired, resolved] = notices;
+  assert.deepEqual([fired.kind, fired.schema, fired.question], ["fired", schema.id, "Broken?"]);
+  assert.equal(fired.examples.length, 3);
+  // The surest first: the loud customer's 0.99, once, then the newest of the rest.
+  assert.deepEqual([fired.examples[0].text, fired.examples.filter((e) => e.id.startsWith("loud")).length], ["still broken 11", 1]);
+  const units = fired.examples.map((example) => [...events, ...loud].find((event) => event.id === example.id).unit);
+  assert.equal(new Set(units).size, 3);
+  assert.ok(fired.examples.every((example) => example.at >= fired.alert.at - 3 * HOUR && example.at < fired.alert.at));
+  // The resolved notice names the question too, and quotes nothing.
+  assert.deepEqual([resolved.kind, resolved.question, resolved.examples], ["resolved", "Broken?", undefined]);
+  // Asked for none, a notice carries no message text.
+  const quiet = collect();
+  await createWatch({ schema, store: memoryStore({ events: [...events, ...loud] }), monitors: [share()], sinks: [quiet.sink], examples: 0 }).tick(fired.alert.at);
+  assert.equal(quiet.notices[0].examples, undefined);
+});
+
+test("a one-event notice quotes the event as stored, after redaction", async () => {
+  const store = memoryStore();
+  const pipeline = createPipeline({ schema, labeler: counting(), store, redact: redactBasics });
+  await pipeline.ingest([text("leak", "broken: I can see card 4111 1111 1111 1111 from another shop", 10 * HOUR - 60_000)]);
+  const { notices, sink } = collect();
+  await createWatch({ schema, store, monitors: [eventMonitor({ signal: "bug" })], sinks: [sink] }).tick(10 * HOUR);
+  assert.deepEqual(notices.map((n) => [n.alert.event.id, n.question, n.examples]), [["leak", "Broken?", [{ id: "leak", at: 10 * HOUR - 60_000, text: "broken: I can see card [card]from another shop" }]]]);
 });

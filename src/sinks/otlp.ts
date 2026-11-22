@@ -3,13 +3,14 @@
 // chart the signals and alert on them with the tools you already have.
 //
 // A labeled event's record carries each signal as a number attribute, `signal.<key>`, and each
-// tag under its own name. Its text is left out unless you ask for it.
+// tag under its own name. A notice's carries the question asked and its examples' ids. Message
+// text is left out of both unless you ask for it.
 import { postJson } from "../http.ts";
 import type { Fetch } from "../http.ts";
 import type { Notice, Sink } from "../pipeline.ts";
 import type { LabeledEvent } from "../types.ts";
 
-type AnyValue = { stringValue: string } | { doubleValue: number } | { boolValue: boolean };
+type AnyValue = { stringValue: string } | { doubleValue: number } | { boolValue: boolean } | { arrayValue: { values: AnyValue[] } };
 interface KeyValue {
   key: string;
   value: AnyValue;
@@ -22,10 +23,8 @@ interface LogRecord {
   attributes: KeyValue[];
 }
 
-const attribute = (key: string, value: string | number | boolean): KeyValue => ({
-  key,
-  value: typeof value === "string" ? { stringValue: value } : typeof value === "number" ? { doubleValue: value } : { boolValue: value },
-});
+const valueOf = (value: string | number | boolean): AnyValue => (typeof value === "string" ? { stringValue: value } : typeof value === "number" ? { doubleValue: value } : { boolValue: value });
+const attribute = (key: string, value: string | number | boolean | readonly string[]): KeyValue => ({ key, value: typeof value === "object" ? { arrayValue: { values: value.map(valueOf) } } : valueOf(value) });
 
 const nanos = (ms: number): string => `${Math.round(ms)}000000`;
 
@@ -45,8 +44,9 @@ const eventRecord = (event: LabeledEvent, includeText: boolean): LogRecord => ({
   ],
 });
 
-const noticeRecord = (notice: Notice): LogRecord => {
-  const { alert } = notice;
+const noticeRecord = (notice: Notice, includeText: boolean): LogRecord => {
+  const { alert, examples = [] } = notice;
+  const texts = examples.flatMap((example) => (example.text === undefined ? [] : [example.text]));
   const page = alert.severity === "page" && notice.kind === "fired";
   const lead = notice.suspects?.[0];
   return {
@@ -60,6 +60,10 @@ const noticeRecord = (notice: Notice): LogRecord => {
       attribute("open_sentinel.monitor", alert.monitor),
       attribute("open_sentinel.severity", alert.severity),
       ...(alert.signal === undefined ? [] : [attribute("open_sentinel.signal", alert.signal)]),
+      ...(notice.schema === undefined ? [] : [attribute("open_sentinel.schema", notice.schema)]),
+      ...(notice.question === undefined ? [] : [attribute("open_sentinel.question", notice.question)]),
+      ...(examples.length === 0 ? [] : [attribute("open_sentinel.examples.id", examples.map((example) => example.id))]),
+      ...(includeText && texts.length > 0 ? [attribute("open_sentinel.examples.text", texts)] : []),
       ...(alert.event === undefined ? [] : [attribute("open_sentinel.event.id", alert.event.id)]),
       ...Object.entries(alert.where ?? {}).map(([key, value]) => attribute(key, value)),
       ...(lead ? [attribute("open_sentinel.suspect", lead.change.what), attribute("open_sentinel.suspect.id", lead.change.id), attribute("open_sentinel.suspect.confident", notice.confident === true)] : []),
@@ -72,15 +76,15 @@ export const otlpLogs = ({ events = [], notices = [], service, includeText = fal
   resourceLogs: [
     {
       resource: { attributes: [attribute("service.name", service)] },
-      scopeLogs: [{ scope: { name: "open-sentinel" }, logRecords: [...events.map((event) => eventRecord(event, includeText)), ...notices.map(noticeRecord)] }],
+      scopeLogs: [{ scope: { name: "open-sentinel" }, logRecords: [...events.map((event) => eventRecord(event, includeText)), ...notices.map((notice) => noticeRecord(notice, includeText))] }],
     },
   ],
 });
 
 /**
  * Sends labeled events and notices as OTLP logs. `url` is the logs endpoint, usually ending in
- * `/v1/logs`. `includeText` also sends each event's text as the record's body; leave it off
- * unless the backend is allowed to hold it.
+ * `/v1/logs`. `includeText` also sends each event's text as the record's body, and the text of
+ * each notice's examples; leave it off unless the backend is allowed to hold it.
  */
 export const otlpSink = ({ url, headers, service = "open-sentinel", includeText = false, fetch: send = fetch }: { url: string; headers?: Record<string, string>; service?: string; includeText?: boolean; fetch?: Fetch }): Sink => ({
   labeled: async (events) => {
@@ -89,6 +93,6 @@ export const otlpSink = ({ url, headers, service = "open-sentinel", includeText 
     }
   },
   notify: async (notices) => {
-    await postJson(send, url, { headers, body: otlpLogs({ notices, service }) });
+    await postJson(send, url, { headers, body: otlpLogs({ notices, service, includeText }) });
   },
 });

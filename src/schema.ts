@@ -149,3 +149,53 @@ export const defineSchema = ({ name, questions, state }: { name: string; questio
 
 /** Every pair of one signal from each list, as "both are yes" keys: `is_bug&area=login`. */
 export const both = (left: readonly string[], right: readonly string[]): string[] => left.flatMap((a) => right.map((b) => `${a}&${b}`));
+
+/** One part of a signal key: the question it answers, and the option, level or second reading it names. */
+export interface SignalPart {
+  /** The part as written: `area=login`. */
+  key: string;
+  /** The question's key: `area`. */
+  question: string;
+  /** For a choice: `login` in `area=login`. */
+  option?: string;
+  /** For a score: `2` in `frustration>=2`, the level counted from 0 at the lowest. */
+  level?: number;
+  /** For `data_exposure.second`: the second reader's answer. */
+  second?: true;
+}
+
+/** Splits a signal key into its parts: one for a plain key, one per side of each `&`. */
+export const parseSignal = (signal: string): SignalPart[] =>
+  signal.split("&").map((key) => {
+    const match = /^([^=>.]+)(?:=([^=>.]+)|>=(\d+)|\.(second))?$/.exec(key);
+    if (!match) {
+      return { key, question: key.split(/[=>.]/)[0]! };
+    }
+    const [, question, option, level, second] = match;
+    return { key, question: question!, ...(option === undefined ? {} : { option }), ...(level === undefined ? {} : { level: Number(level) }), ...(second === undefined ? {} : { second: true as const }) };
+  });
+
+/**
+ * A signal key in the schema's own words: the question, with the option or level it counts.
+ * `area=login` reads "Which part of the product is it about? (Signing in)", and the parts of a
+ * joined key are joined with AND. A part the schema doesn't know is left as its key.
+ */
+export const describeSignal = (schema: Partial<Pick<Schema, "questions">>, signal: string): string =>
+  parseSignal(signal)
+    .map((part) => {
+      const question = schema.questions?.[part.question];
+      if (!question) {
+        return part.key;
+      }
+      if (part.second) {
+        return `${question.ask} (second reader)`;
+      }
+      if (question.type === "choice" && part.option !== undefined) {
+        return `${question.ask} (${question.options[part.option] ?? part.option})`;
+      }
+      if (question.type === "score" && part.level !== undefined) {
+        return `${question.ask} (${question.levels[part.level] ?? `level ${part.level}`} or more)`;
+      }
+      return question.ask;
+    })
+    .join(" AND ");

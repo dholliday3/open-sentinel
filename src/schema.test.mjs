@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { both, choice, defineSchema, score, yesNo } from "./schema.ts";
+import { both, choice, defineSchema, describeSignal, parseSignal, score, yesNo } from "./schema.ts";
 
 const questions = {
   bug: yesNo("Is something broken?"),
@@ -72,4 +72,18 @@ test("the default state is the event's context and its text", () => {
 
 test("both pairs every signal from each list", () => {
   assert.deepEqual(both(["bug", "mood>=2"], ["area=login", "area=billing"]), ["bug&area=login", "bug&area=billing", "mood>=2&area=login", "mood>=2&area=billing"]);
+});
+
+test("a signal key parses into its parts and reads back in the schema's words", () => {
+  assert.deepEqual(parseSignal("bug&area=login"), [{ key: "bug", question: "bug" }, { key: "area=login", question: "area", option: "login" }]);
+  assert.deepEqual(parseSignal("mood>=2"), [{ key: "mood>=2", question: "mood", level: 2 }]);
+  assert.deepEqual(parseSignal("bug.second"), [{ key: "bug.second", question: "bug", second: true }]);
+  assert.equal(describeSignal(schema, "bug&area=login"), "Is something broken? AND Which part? (Signing in)");
+  assert.equal(describeSignal(schema, "mood>=1"), "How upset? (A little or more)");
+  assert.equal(describeSignal(schema, "bug.second"), "Is something broken? (second reader)");
+  // A key from another schema, or the every-event signal, stays as written.
+  assert.equal(describeSignal(schema, "gone&bug"), "gone AND Is something broken?");
+  assert.equal(describeSignal(schema, "*"), "*");
+  // A schema object built by hand without its questions still reads, as its keys.
+  assert.equal(describeSignal({}, "bug&area=login"), "bug AND area=login");
 });

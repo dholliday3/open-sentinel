@@ -6,16 +6,25 @@ import { suspectsFor } from "./changes.ts";
 import type { Suspect } from "./changes.ts";
 import { labelAll } from "./labeler.ts";
 import type { LabelFailure, LabelOptions, Labeler } from "./labeler.ts";
-import { latestAnswers, viewOf } from "./metrics.ts";
+import { EVERY, latestAnswers, on, viewOf } from "./metrics.ts";
+import type { EventView } from "./metrics.ts";
 import { createRunner } from "./monitor.ts";
 import type { Alert, Runner, RunnerOptions, RunnerSnapshot, Tick } from "./monitor.ts";
+import { describeSignal, parseSignal } from "./schema.ts";
 import type { Schema } from "./schema.ts";
 import type { Store } from "./store.ts";
 import { DAY, HOUR } from "./types.ts";
-import type { Interval, Json, LabeledEvent, TextEvent } from "./types.ts";
+import type { Gates, Interval, Json, LabeledEvent, TextEvent } from "./types.ts";
 
 /** Anything that yields events to label: an array, a generator reading a queue, a file reader. */
 export type Source = Iterable<TextEvent> | AsyncIterable<TextEvent>;
+
+/** A message behind an alert, as stored: its text has been through the pipeline's `redact`, and is absent when text isn't kept. */
+export interface Example {
+  id: string;
+  at: number;
+  text?: string;
+}
 
 /** What a sink is told about an alert. */
 export interface Notice {
@@ -25,11 +34,48 @@ export interface Notice {
   /** When it happened: when the alert was raised, or when its episode was found to be over. */
   at: number;
   alert: Alert;
+  /** The schema the watch reads, `<name>@<version>`: the exact wording behind `question`. */
+  schema?: string;
+  /** The alert's signal in the schema's own words (see `describeSignal`). Absent when the monitor watches no question. */
+  question?: string;
+  /**
+   * On a fired notice, up to `examples` (3) messages behind the alert: for a one-event alert, the
+   * event itself; otherwise events in the stretch the alert is about that say yes to its signal,
+   * one per customer, surest first.
+   */
+  examples?: Example[];
   /** The changes most likely behind it, best first, when any fit. Leads to check, not verdicts. */
   suspects?: Suspect[];
   /** True when the top suspect has a clear lead and real evidence. */
   confident?: boolean;
 }
+
+/** The messages behind an alert, for a notice: see `Notice.examples`. */
+const examplesOf = (alert: Alert, view: EventView, gates: Gates, limit: number): Example[] => {
+  const asExample = ({ id, at, text }: LabeledEvent): Example => ({ id, at, ...(text === undefined ? {} : { text }) });
+  if (alert.event) {
+    const { id, at } = alert.event;
+    return view.within({ from: at, to: at + 1 }).filter((event) => event.id === id).slice(0, limit).map(asExample);
+  }
+  if (alert.signal === undefined || alert.signal === EVERY || limit <= 0) {
+    return [];
+  }
+  const keys = parseSignal(alert.signal).map((part) => part.key);
+  const sureness = (event: LabeledEvent): number => Math.min(...keys.map((key) => event.signals[key] ?? 0));
+  const customers = new Set<string>();
+  return view
+    .within({ from: alert.at - alert.windowMs, to: alert.at, where: alert.where })
+    .filter(on(alert.signal, gates))
+    .sort((a, b) => sureness(b) - sureness(a) || b.at - a.at)
+    .filter((event) => {
+      const who = event.unit ?? event.id;
+      const first = !customers.has(who);
+      customers.add(who);
+      return first;
+    })
+    .slice(0, limit)
+    .map(asExample);
+};
 
 /**
  * Where results go: a log, a webhook, your metrics backend. Implement either method or both.
@@ -207,6 +253,8 @@ export interface WatchOptions extends Omit<RunnerOptions, "snapshot"> {
   stateKey?: string;
   /** How many notices to hold for a sink that is failing. */
   maxPending?: number;
+  /** How many messages a fired notice quotes (`Notice.examples`). 0 keeps message text out of notices. */
+  examples?: number;
 }
 
 export interface WatchTick extends Tick {
@@ -236,7 +284,7 @@ export interface Watch {
  * thousands of events a week this was built on; for a stream much larger than that, write
  * monitors whose `check` asks your database for counts instead of reading the view.
  */
-export const createWatch = ({ schema, store, sinks = [], labeler, suspectLookbackMs = 10 * DAY, stateKey = `watch:${schema.name}`, maxPending = 1000, ...options }: WatchOptions): Watch => {
+export const createWatch = ({ schema, store, sinks = [], labeler, suspectLookbackMs = 10 * DAY, stateKey = `watch:${schema.name}`, maxPending = 1000, examples = 3, ...options }: WatchOptions): Watch => {
   const gates = { ...schema.gates, ...options.gates };
   const lookback = Math.max(suspectLookbackMs, options.stepMs ?? HOUR, ...options.monitors.map((monitor) => monitor.lookbackMs));
   // Built now so a mistake in the monitors (two with one name) fails here, not on the first tick.
@@ -268,14 +316,16 @@ export const createWatch = ({ schema, store, sinks = [], labeler, suspectLookbac
       const view = viewOf(latestAnswers(stored));
       const changes = await store.changes({ from: now - lookback, to: now + 1 });
       const tick = await runner.tick(view, now, changes);
+      const about = (alert: Alert): Pick<Notice, "schema" | "question"> => ({ schema: schema.id, ...(alert.signal === undefined || alert.signal === EVERY ? {} : { question: describeSignal(schema, alert.signal) }) });
       const notices: Notice[] = [
         ...tick.fired
           .filter((alert) => alert.mutedBy === undefined)
           .map((alert): Notice => {
             const behind = suspectsFor(alert, view, changes, { gates, lookbackMs: suspectLookbackMs });
-            return { id: `${alert.id}#fired`, kind: "fired", at: alert.at, alert, ...(behind && behind.ranked.length > 0 ? { suspects: behind.ranked.slice(0, 3), confident: behind.confident } : {}) };
+            const quoted = examplesOf(alert, view, gates, examples);
+            return { id: `${alert.id}#fired`, kind: "fired", at: alert.at, alert, ...about(alert), ...(quoted.length > 0 ? { examples: quoted } : {}), ...(behind && behind.ranked.length > 0 ? { suspects: behind.ranked.slice(0, 3), confident: behind.confident } : {}) };
           }),
-        ...tick.resolved.filter((alert) => alert.mutedBy === undefined).map((alert): Notice => ({ id: `${alert.id}#resolved`, kind: "resolved", at: now, alert })),
+        ...tick.resolved.filter((alert) => alert.mutedBy === undefined).map((alert): Notice => ({ id: `${alert.id}#resolved`, kind: "resolved", at: now, alert, ...about(alert) })),
       ];
       outbox.queue(notices);
       // On record before anything is sent: a process that dies mid-send still owes the notice.
