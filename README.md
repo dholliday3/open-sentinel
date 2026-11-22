@@ -228,7 +228,7 @@ Two synthetic three-week support inboxes (4,820 and 4,990 messages), replayed wi
 | Planted incidents that alerted | 9 of 9, with no false alerts |
 | Time to page on a sharp incident | under 2 hours |
 | Time to page on a slow bug (about one message an hour) | 23 hours |
-| Slow shifts reaching the daily digest | 2 to 6 days |
+| Slow shifts reaching the daily digest | 3 to 6 days |
 | False pages in incident-free weeks | 0.027 a week, against a budget of 0.25 |
 | Right release ranked first, six other deploys a day | 40 of 40 |
 | Planned marketing emails | muted, as declared |

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { viewOf } from "./metrics.ts";
+import { replay } from "./monitor.ts";
 import { eventMonitor, exposureMonitor, shareMonitor, shareMonitors, silenceMonitor, TIERS, volumeMonitor } from "./monitors.ts";
 import { binomTail } from "./stats.ts";
 import { seeded, stream } from "./testing.ts";
@@ -20,6 +21,8 @@ test("shareMonitor fires when a signal's share rises, and says what it compared"
   assert.equal(after.state, "firing");
   assert.match(after.detail.now, /^\d+\/60$/);
   assert.ok(after.detail.p < 1e-8);
+  // A window of no length has no stretches to count its baseline in.
+  assert.throws(() => shareMonitor({ signal: "bug", windowMs: 0 }), /longer than nothing/);
 });
 
 test("shareMonitor doesn't fire when everything doubles together", () => {
@@ -74,6 +77,44 @@ test("shareMonitor counts the baseline the way it counts the window, so accounts
   assert.ok(total > 800 && yes / total < 0.1, result.detail.baseline);
   const [, now] = result.detail.now.split("/").map(Number);
   assert.ok(now <= 30);
+});
+
+/** A thousand accounts, each writing about five times a day, 5% of messages a bug report, and nothing ever changing. */
+const regulars = (days) => {
+  const random = seeded(101);
+  return stream({ start: 0, hours: days * 24, perHour: 200, signals: { bug: 0.05 }, random: seeded(201) }).map((event) => ({ ...event, unit: `account-${Math.floor(random() * 1000)}` }));
+};
+const shareOf = (counts) => {
+  const [yes, total] = counts.split("/").map(Number);
+  return yes / total;
+};
+
+test("an unchanged stream of customers who write every day raises nothing at any tier", async () => {
+  // Counted once per stretch, a customer is likelier to have said yes in three days than in one.
+  // A 3-day window against a week once left a one-day stub in the baseline, which read low.
+  const events = regulars(17);
+  const now = 17 * DAY;
+  const { alerts } = await replay({ monitors: shareMonitors({ signals: ["bug"] }) }, events, { from: now - DAY, to: now });
+  assert.deepEqual(alerts.map((alert) => alert.monitor), []);
+  const digest = check(shareMonitor({ signal: "bug", windowMs: 3 * DAY }), events, now);
+  // A week rounded up to three whole 3-day stretches: three times the window's customers, at about the window's share.
+  const [windowTotal, baselineTotal] = [digest.detail.now, digest.detail.baseline].map((counts) => Number(counts.split("/")[1]));
+  assert.ok(Math.abs(baselineTotal / windowTotal - 3) < 0.03, `${digest.detail.baseline} against ${digest.detail.now}`);
+  assert.ok(Math.abs(shareOf(digest.detail.baseline) - shareOf(digest.detail.now)) < 0.03, `${digest.detail.baseline} against ${digest.detail.now}`);
+});
+
+test("excluded time doesn't make a baseline read low: a stretch it touches is left out whole", () => {
+  const events = regulars(17);
+  const monitor = shareMonitor({ signal: "bug", windowMs: DAY, minCount: 8 });
+  const now = 17 * DAY;
+  // Planned changes covering the second half of three baseline days.
+  const excluded = [12, 13, 14].map((day) => ({ from: day * DAY + 12 * HOUR, to: (day + 1) * DAY }));
+  const plain = check(monitor, events, now);
+  const holed = check(monitor, events, now, { excluded });
+  assert.equal(holed.state, "ok");
+  // Still seven whole days, reached for further back, counted the way the window is.
+  assert.ok(Math.abs(Number(holed.detail.baseline.split("/")[1]) / Number(plain.detail.baseline.split("/")[1]) - 1) < 0.01, `${holed.detail.baseline} against ${plain.detail.baseline}`);
+  assert.ok(Math.abs(shareOf(holed.detail.baseline) - shareOf(plain.detail.baseline)) < 0.01, `${holed.detail.baseline} against ${plain.detail.baseline}`);
 });
 
 test("shareMonitor takes another test in place of Fisher's", () => {

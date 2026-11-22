@@ -123,6 +123,35 @@ export const countUnits = (events: readonly LabeledEvent[], signal: string, gate
 export const outside = (events: LabeledEvent[], excluded: readonly Interval[]): LabeledEvent[] =>
   excluded.length === 0 ? events : events.filter((event) => !excluded.some((gap) => event.at >= gap.from && event.at < gap.to));
 
+/**
+ * Stretches exactly `lengthMs` long, laid back to back from `end` toward the past: at most
+ * `count` of them, none starting before `earliest`, and none that an excluded interval touches.
+ * Where one would, the next ends where that interval begins.
+ *
+ * A baseline counted per customer has to be cut this way. A customer has fewer chances to say
+ * yes in a shorter stretch, so a stretch cut short, by the end of the span or by excluded time,
+ * reads low and makes an unchanged window look like a rise.
+ */
+export const wholeStretches = ({ end, lengthMs, count, earliest, excluded = [] }: { end: number; lengthMs: number; count: number; earliest: number; excluded?: readonly Interval[] }): Interval[] => {
+  if (!(lengthMs > 0)) {
+    throw new Error("A stretch must be longer than nothing");
+  }
+  const stretches: Interval[] = [];
+  let to = end;
+  while (stretches.length < count && to - lengthMs >= earliest) {
+    const from = to - lengthMs;
+    const touching = excluded.filter((gap) => gap.from < to && gap.to > from);
+    if (touching.length === 0) {
+      stretches.push({ from, to });
+      to = from;
+    } else {
+      // Any stretch ending between the earliest touching interval's start and `to` would touch it too.
+      to = Math.min(...touching.map((gap) => gap.from));
+    }
+  }
+  return stretches;
+};
+
 /** One signal's counts in equal buckets of time. */
 export const series = (view: EventView, { signal, gates, from, to, bucketMs, where }: { signal: string; gates?: Gates; from: number; to: number; bucketMs: number; where?: TagFilter }): Array<Counts & { at: number }> => {
   if (!(bucketMs > 0)) {

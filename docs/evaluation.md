@@ -3,7 +3,7 @@
 Every number here comes from synthetic data: messages a model wrote to a brief, with incidents
 planted on known days. None of it is from real customers or real traffic. Where a number comes
 from a test, the test is named; the rest say how to rerun them. The replay, false-alarm and
-attribution numbers were rerun on 2026-11-21 on Node 24.22.
+attribution numbers were rerun on 2026-11-22 on Node 24.22.
 
 ## The data
 
@@ -33,13 +33,13 @@ the emails muted, the sharp ones within 2 hours.
 |---|---|---|---|---|---|
 | main | Google sign-in broken in Android release 4.12.0 | sharp, one platform | page | 1 | 3h share of `area=login_access` |
 | main | Invoice PDF adds tax twice; no question names it | about one message an hour | page | 23 | 24h share of `is_bug_report&area=invoices_estimates` |
-| main | Reaction to a price increase | slow, over a week | digest | 112 | 3-day share of `frustration>=2&area=billing_plan` |
+| main | Reaction to a price increase | slow, over a week | digest | 111 | 3-day share of `frustration>=2&area=billing_plan` |
 | main | One business sees another's customers | one message | page | 1 | `event: data_exposure` |
 | main | Questions after a launch email | harmless | muted | | |
 | main | Look-alikes of a data exposure | harmless | nothing | | |
 | holdout | Texts silently not delivered | sharp, everyone | page | 1 | 3h share of `area=texting_calls` |
-| holdout | The assistant double-books after a new tool | moderate | digest | 55 | 3-day share of `is_bug_report&area=scheduling_booking` |
-| holdout | Payouts arriving days late | slow, over a week | digest | 142 | 3-day share of `frustration>=2&area=payments_payouts` |
+| holdout | The assistant double-books after a new tool | moderate | digest | 75 | 3-day share of `is_bug_report&area=scheduling_booking` |
+| holdout | Payouts arriving days late | slow, over a week | digest | 132 | 3-day share of `is_bug_report&area=payments_payouts` |
 | holdout | iOS 4.13.0 crashes when adding photos | sharp, one version | page | 2 | 3h share of `is_bug_report&area=other` |
 | holdout | Questions after a webinar email | harmless | muted | | |
 | holdout | Account taken over by an outsider | one message | page | 1 | `event: data_exposure` |
@@ -48,9 +48,17 @@ the emails muted, the sharp ones within 2 hours.
 No alert on either inbox had nothing planted behind it. Without the emails declared as planned,
 each email raised a page within an hour; every incident was still raised, and nothing false.
 
+Counting baselines in whole stretches (2026-11-22) moved the three digest items. The price and
+payout digests came 1 and 10 hours sooner. The double-booking digest came 20 hours later than
+its earlier 55, though at 39 hours when the webinar isn't declared: the webinar's two planned
+days end 2 days and 8 hours before the 3-day window that would have caught it, too short for a
+whole 3-day stretch, so the baseline reaches back past them to older weeks.
+
 `examples/support/replay.test.mjs` is a golden test: with the comparison and fixed cutoffs of the
-prototype this package grew from passed in, a replay raises exactly the alerts that prototype
-recorded, monitor for monitor and hour for hour.
+prototype this package grew from passed in, a replay raises exactly the alerts on record,
+monitor for monitor and hour for hour. The record is the prototype's, except that counting
+baselines in whole stretches moved its 3-day digest alerts by 1 to 11 hours, each still behind
+the same planted item, and added one behind the iOS photo crash.
 
 ## False alarms
 
@@ -61,7 +69,7 @@ weeks each, 37 weeks in all:
 | | Per week | Budget |
 |---|---|---|
 | False pages | 0.027 | 0.25 |
-| False digest items | 0.108 | 1 |
+| False digest items | 0.081 | 1 |
 
 `node examples/support/budget.ts 10 repeats` does the same with customers who write more than
 once: three in ten arrivals are followed by one to four more from the same customer. 10
@@ -69,8 +77,8 @@ shuffles, 19 weeks:
 
 | Counted | False pages a week | False digest items a week |
 |---|---|---|
-| Per customer (the default) | 0 | 0.054 |
-| Per message | 8.99 (36 times the budget) | 2.3 |
+| Per customer (the default) | 0 | 0.162 |
+| Per message | 8.99 (36 times the budget) | 2.26 |
 
 ## Attribution
 

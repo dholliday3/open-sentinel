@@ -84,8 +84,9 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
 
 - `shareMonitor`: is a signal's share higher in this window than in its baseline? Counts
   customers when events carry a `unit`. The baseline is the span before the window
-  (`trailing`, a week by default) or the same hours in earlier periods (`seasonal`). `compare`
-  takes another test in place of Fisher's. `where` watches one tag value against its own past.
+  (`trailing`, a week by default, rounded up to whole windows) or the same hours in earlier
+  periods (`seasonal`), counted in stretches exactly as long as the window. `compare` takes
+  another test in place of Fisher's. `where` watches one tag value against its own past.
 - `shareMonitors`: one per signal at three windows. 3 hours (at least 5 customers) and 24 hours
   (at least 8) page; 3 days (at least 10) goes to a digest.
 - `eventMonitor`: one event is enough. Pages at 0.9, or from `second.from` when a second reader
@@ -107,7 +108,8 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
 - **Planned changes.** A change with `expect` mutes the alerts it predicted and is left out of
   every baseline. An alert still firing after the planned stretch is raised then.
 - **Known incidents.** `watch.exclude(interval)` leaves a confirmed incident out of later
-  baselines. A trailing baseline that loses time reaches further back to replace it.
+  baselines. Any baseline stretch it touches is left out whole; a trailing baseline reaches
+  further back to replace it.
 - **Not enough data** is its own answer (`no_data`). `tick` returns which monitors said so. It
   never alerts and never ends an episode.
 - **Mixed labelers.** The watch counts each event once and reports `mixedLabelers` when its

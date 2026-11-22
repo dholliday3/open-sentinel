@@ -1,7 +1,7 @@
 // The built-in monitor kinds. Each is a plain object that satisfies `Monitor`; write your own the
 // same way.
 import { exposureOf } from "./changes.ts";
-import { count, countUnits, EVERY, outside } from "./metrics.ts";
+import { count, countUnits, EVERY, wholeStretches } from "./metrics.ts";
 import type { Monitor, Severity } from "./monitor.ts";
 import { compareRates } from "./stats.ts";
 import type { Counts } from "./stats.ts";
@@ -20,39 +20,24 @@ export type Baseline = { kind: "trailing"; spanMs: number } | { kind: "seasonal"
 const spanLabel = (ms: number): string => (ms <= DAY ? `${Math.round(ms / HOUR)}h` : `${Math.round(ms / DAY)}-day`);
 const tagLabel = (where?: TagFilter): string => (where ? ` {${Object.entries(where).map(([key, value]) => `${key}:${value}`).join(",")}}` : "");
 
-/** How much of a stretch the excluded intervals cover. Overlapping intervals are counted once. */
-const covered = (range: Interval, excluded: readonly Interval[]): number => {
-  let total = 0;
-  let reached = range.from;
-  for (const gap of [...excluded].sort((a, b) => a.from - b.from)) {
-    const from = Math.max(gap.from, reached);
-    const to = Math.min(gap.to, range.to);
-    if (to > from) {
-      total += to - from;
-      reached = to;
-    }
-  }
-  return total;
-};
+/** How many window-length stretches a trailing baseline holds: its span, rounded up. */
+const stretchesIn = (spanMs: number, windowMs: number): number => Math.max(1, Math.ceil(spanMs / windowMs));
+
+/** How far back a trailing baseline may reach: twice its span, so excluded time can be replaced, and never less than its own stretches. */
+const reachOf = (spanMs: number, windowMs: number): number => Math.max(2 * spanMs, stretchesIn(spanMs, windowMs) * windowMs);
 
 /**
- * The stretches a window is compared with. A trailing baseline that loses time to exclusions
- * reaches further back to make it up, by at most its own span, so leaving out a known incident
- * doesn't leave the monitor with less to compare against.
+ * The stretches a window is compared with, each exactly as long as the window and untouched by
+ * excluded time (see `wholeStretches`). A trailing baseline is its span rounded up to whole
+ * windows: 56 for a 3-hour window against a week, three (nine days) for a 3-day window. One
+ * that loses stretches to exclusions replaces them from further back, never reaching more than
+ * twice its span. A seasonal cycle that excluded time touches is left out.
  */
-const baselineRanges = (baseline: Baseline, now: number, windowMs: number, excluded: readonly Interval[]): Interval[] => {
+const baselineStretches = (baseline: Baseline, now: number, windowMs: number, excluded: readonly Interval[]): Interval[] => {
   if (baseline.kind === "seasonal") {
-    return Array.from({ length: baseline.cycles }, (_, i) => ({ from: now - (i + 1) * baseline.periodMs - windowMs, to: now - (i + 1) * baseline.periodMs }));
+    return Array.from({ length: baseline.cycles }, (_, i) => now - (i + 1) * baseline.periodMs).flatMap((end) => wholeStretches({ end, lengthMs: windowMs, count: 1, earliest: end - windowMs, excluded }));
   }
-  const range = { from: now - windowMs - baseline.spanMs, to: now - windowMs };
-  for (let pass = 0; pass < 3; pass += 1) {
-    const from = now - windowMs - baseline.spanMs - Math.min(baseline.spanMs, covered(range, excluded));
-    if (from === range.from) {
-      break;
-    }
-    range.from = from;
-  }
-  return [range];
+  return wholeStretches({ end: now - windowMs, lengthMs: windowMs, count: stretchesIn(baseline.spanMs, windowMs), earliest: now - windowMs - reachOf(baseline.spanMs, windowMs), excluded });
 };
 
 export interface ShareMonitorOptions {
@@ -84,6 +69,9 @@ export interface ShareMonitorOptions {
  * ordinary week look significant.
  */
 export const shareMonitor = ({ signal, windowMs, baseline = { kind: "trailing", spanMs: WEEK }, minCount = 5, minBaseline = 30, per = "unit", compare = compareRates, severity = "page", where, alpha, name }: ShareMonitorOptions): Monitor => {
+  if (!(windowMs > 0)) {
+    throw new Error(`A share monitor's window must be longer than nothing: ${windowMs}`);
+  }
   const tally = per === "unit" ? countUnits : count;
   return {
     name: name ?? `${spanLabel(windowMs)} share of ${signal}${tagLabel(where)}${baseline.kind === "seasonal" ? " (seasonal)" : ""}`,
@@ -91,22 +79,19 @@ export const shareMonitor = ({ signal, windowMs, baseline = { kind: "trailing", 
     signal,
     ...(where ? { where } : {}),
     windowMs,
-    // Twice a trailing span: it may reach that far back to replace excluded time.
-    lookbackMs: windowMs + (baseline.kind === "trailing" ? 2 * baseline.spanMs : baseline.cycles * baseline.periodMs),
+    lookbackMs: windowMs + (baseline.kind === "trailing" ? reachOf(baseline.spanMs, windowMs) : baseline.cycles * baseline.periodMs),
     tested: true,
     ...(alpha === undefined ? {} : { alpha }),
     check: (view, now, { alpha: cutoff, excluded, gates }) => {
       const current = tally(view.within({ from: now - windowMs, to: now, where }), signal, gates);
-      // The baseline is counted the way the window is: in stretches the window's length, each
-      // customer once per stretch. Counted once over a whole week, an account that writes every
-      // day would look far more likely to say yes than it does in any one window.
+      // The baseline is counted the way the window is: in whole stretches the window's length,
+      // each customer once per stretch. Counted once over a whole week, an account that writes
+      // every day would look far more likely to say yes than it does in any one window.
       const base = { yes: 0, total: 0 };
-      for (const range of baselineRanges(baseline, now, windowMs, excluded)) {
-        for (let to = range.to; to > range.from; to -= windowMs) {
-          const stretch = tally(outside(view.within({ from: Math.max(range.from, to - windowMs), to, where }), excluded), signal, gates);
-          base.yes += stretch.yes;
-          base.total += stretch.total;
-        }
+      for (const stretch of baselineStretches(baseline, now, windowMs, excluded)) {
+        const counted = tally(view.within({ ...stretch, where }), signal, gates);
+        base.yes += counted.yes;
+        base.total += counted.total;
       }
       const detail = { now: `${current.yes}/${current.total}`, baseline: `${base.yes}/${base.total}` };
       if (current.total === 0 || base.total < minBaseline) {

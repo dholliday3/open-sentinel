@@ -4,7 +4,7 @@
 //   time      did the change land just before the shift began?
 // The third, whether the messages describe what the change touched, needs a reader: see
 // investigate.ts.
-import { count, countUnits, EVERY, hasTags } from "./metrics.ts";
+import { count, countUnits, EVERY, hasTags, wholeStretches } from "./metrics.ts";
 import type { EventView } from "./metrics.ts";
 import type { Alert } from "./monitor.ts";
 import { compareRates, logLik } from "./stats.ts";
@@ -102,8 +102,9 @@ const kindsOf = (events: readonly LabeledEvent[], scoped: ReadonlySet<string>): 
  * Either way, matched on every other tag, so iOS events are compared with earlier iOS events. A
  * group that always complained more then shows no rise, and gets no blame.
  *
- * Earlier time is counted in stretches as long as the time since the change, each customer once
- * per stretch, so "before" and "since" count the same thing. When only a few earlier events
+ * Earlier time is counted in whole stretches as long as the time since the change, as many as fit
+ * in `baselineMs`, each customer once per stretch, so "before" and "since" count the same thing.
+ * A change older than `baselineMs` has no stretch to compare with. When only a few earlier events
  * carry the scope's tags (a tester who had the flag early), there is too little to compare with
  * and the answer is that it can't say.
  */
@@ -123,8 +124,8 @@ export const exposureOf = (view: EventView, change: Change, { signal, gates, whe
   const existed = view.within({ from: start, to: change.at, where }).some(reached);
   const span = Math.max(until - change.at, HOUR);
   const earlier = new Map<string, Counts>();
-  for (let to = change.at; to > start; to -= span) {
-    const stretch = view.within({ from: Math.max(start, to - span), to, where });
+  for (const range of wholeStretches({ end: change.at, lengthMs: span, count: Infinity, earliest: start })) {
+    const stretch = view.within({ ...range, where });
     for (const [kind, events] of kindsOf(existed ? stretch.filter(reached) : stretch, scoped)) {
       const counted = countUnits(events, signal, gates);
       const sum = earlier.get(kind) ?? { yes: 0, total: 0 };

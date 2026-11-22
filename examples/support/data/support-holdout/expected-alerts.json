@@ -13,11 +13,11 @@
   },
   {
     "monitor": "3-day share of area=google_profile",
-    "at": 1793901600000
+    "at": 1793905200000
   },
   {
     "monitor": "3-day share of praise",
-    "at": 1793901600000
+    "at": 1793912400000
   },
   {
     "monitor": "3h share of area=texting_calls",
@@ -44,16 +44,16 @@
     "at": 1794081600000
   },
   {
-    "monitor": "conversation volume",
-    "at": 1794085200000
-  },
-  {
     "monitor": "3-day share of frustration>=2&area=texting_calls",
     "at": 1794085200000
   },
   {
+    "monitor": "conversation volume",
+    "at": 1794085200000
+  },
+  {
     "monitor": "3-day share of is_bug_report&area=texting_calls",
-    "at": 1794092400000
+    "at": 1794096000000
   },
   {
     "monitor": "24h share of frustration>=2",
@@ -65,27 +65,27 @@
   },
   {
     "monitor": "3-day share of area=texting_calls",
-    "at": 1794139200000
+    "at": 1794135600000
   },
   {
     "monitor": "3-day share of frustration>=2",
-    "at": 1794157200000
+    "at": 1794153600000
   },
   {
     "monitor": "3-day share of is_bug_report&area=payments_payouts",
-    "at": 1794222000000
+    "at": 1794200400000
   },
   {
     "monitor": "3-day share of frustration>=2&area=payments_payouts",
-    "at": 1794243600000
+    "at": 1794222000000
+  },
+  {
+    "monitor": "3-day share of is_bug_report&area=scheduling_booking",
+    "at": 1794474000000
   },
   {
     "monitor": "event: data_exposure",
     "at": 1794502800000
-  },
-  {
-    "monitor": "3-day share of is_bug_report&area=scheduling_booking",
-    "at": 1794513600000
   },
   {
     "monitor": "3h share of is_bug_report&area=other",
@@ -100,11 +100,15 @@
     "at": 1794610800000
   },
   {
-    "monitor": "3-day share of is_bug_report&area=other",
-    "at": 1794625200000
+    "monitor": "3-day share of frustration>=2&area=other",
+    "at": 1794614400000
   },
   {
-    "monitor": "3-day share of frustration>=2&area=other",
-    "at": 1794625200000
+    "monitor": "3-day share of is_bug_report&area=other",
+    "at": 1794621600000
+  },
+  {
+    "monitor": "3-day share of frustration>=2&area=invoices_estimates",
+    "at": 1794700800000
   }
 ]

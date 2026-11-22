@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { breakdown, count, countUnits, latestAnswers, movers, on, outside, series, viewOf } from "./metrics.ts";
+import { breakdown, count, countUnits, latestAnswers, movers, on, outside, series, viewOf, wholeStretches } from "./metrics.ts";
 
 const event = (id, at, signals, tags = {}) => ({ id, at, tags, schema: "t@1", labeler: "l", probability: "native", signals });
 const events = [
@@ -69,4 +69,14 @@ test("latestAnswers keeps one set of answers per event: the labeler in use most 
   assert.equal(latestAnswers(stored.slice(0, 3)).length, 3);
   // The same id under two schemas is two different measurements, and both stay.
   assert.equal(latestAnswers([answered("a", 100, "v1", 0.9), { ...answered("a", 100, "v1", 0.4), schema: "t@2" }]).length, 2);
+});
+
+test("wholeStretches lays stretches back to back, steps over excluded time, and stops at the earliest start", () => {
+  const spans = (options) => wholeStretches(options).map(({ from, to }) => [from, to]);
+  assert.deepEqual(spans({ end: 100, lengthMs: 10, count: 3, earliest: 0 }), [[90, 100], [80, 90], [70, 80]]);
+  // An interval touching a stretch moves the next one to end where the interval begins; one that only meets an edge doesn't.
+  assert.deepEqual(spans({ end: 100, lengthMs: 10, count: 3, earliest: 0, excluded: [{ from: 85, to: 87 }, { from: 60, to: 70 }] }), [[90, 100], [75, 85], [50, 60]]);
+  // Never a stub: what doesn't fit whole before `earliest` is left out.
+  assert.deepEqual(spans({ end: 100, lengthMs: 30, count: 9, earliest: 25 }), [[70, 100], [40, 70]]);
+  assert.throws(() => wholeStretches({ end: 100, lengthMs: 0, count: 1, earliest: 0 }), /longer than nothing/);
 });

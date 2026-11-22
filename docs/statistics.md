@@ -25,6 +25,14 @@ yes if any of their events in the window is. The baseline is counted the same wa
 as long as the window, each customer once per stretch. Counted once over a whole week, a
 customer who writes every day would look far more likely to say yes than in any one window.
 
+Every stretch is exactly as long as the window. A customer has fewer chances to say yes in a
+shorter stretch, so one cut short reads low and makes an unchanged window look like a rise. A
+trailing baseline is therefore its span rounded up to whole windows: a week is 56 three-hour
+stretches or seven days, and against a 3-day window it is three 3-day stretches, nine days.
+Before this rule the 3-day tier compared with two 3-day stretches and a one-day stub, and a
+stream with nothing in it, from a thousand customers who each write every day, raised a digest
+item (`src/monitors.test.mjs`). Excluded time cut stretches short the same way, in every tier.
+
 This matters for the alarm budget, which assumes the things counted are independent. One
 customer's five messages about one problem are not five independent observations. On shuffled
 synthetic data where three in ten arrivals were followed by more from the same customer,
@@ -49,8 +57,10 @@ hiding.
 - **Minimums.** A window with fewer yeses than `minCount` never fires. A baseline with fewer than
   `minBaseline` (30) customers is `no_data`.
 - **Exclusions.** Planned changes, confirmed incidents (`watch.exclude`) and, if you turn on
-  `excludePagesMs`, a page's own stretch are left out of baselines. A trailing baseline that
-  loses time to them reaches further back, by at most its own span, to make it up.
+  `excludePagesMs`, a page's own stretch are left out of baselines. A stretch they touch is
+  left out whole, not trimmed, for the reason above. A trailing baseline replaces the stretches
+  it loses from further back, never reaching more than twice its span; a seasonal baseline
+  drops the cycles they touch.
 
 ## The alarm budget
 
@@ -99,8 +109,10 @@ stays quiet.
 - **Rise.** Is it more common among exposed events than among events like them before the
   change? "Like them" means sharing every other tag, so iOS events are compared with earlier iOS
   events. If the scope's tags existed before (a platform), the comparison is with that group's
-  own past; if not (a new version), with all earlier events. Kinds with fewer than 5 earlier
-  events are skipped, and at least half the exposed events need a kind to compare with.
+  own past; if not (a new version), with all earlier events. Earlier time is counted in whole
+  stretches as long as the time since the change, as many as fit in the week before it, so a
+  change more than a week old has no "before". Kinds with fewer than 5 earlier events are
+  skipped, and at least half the exposed events need a kind to compare with.
 
 The evidence is the weaker of the two. Without a rise to check, contrast counts only for a
 change marked `randomized`, because otherwise the exposed group may simply be a different kind
