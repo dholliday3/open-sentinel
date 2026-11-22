@@ -25,7 +25,8 @@ What open-sentinel can't do yet, and what hasn't been tested.
 - **A real OTLP backend.** The payload is valid OTLP; no backend has received it yet.
 - **Seasonal baselines on real rhythms.** Tested on made-up weekly patterns only.
 - **One process per watch.** Two processes ticking the same watch both alert and overwrite each
-  other's state ([guarantees](guarantees.md)).
+  other's state. Within one step their alerts carry the same ids, so a sink can drop the repeat
+  ([guarantees](guarantees.md)).
 
 ## Not built
 

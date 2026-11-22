@@ -278,3 +278,17 @@ test("a confirmed incident is left out of later baselines, across restarts; cuto
   assert.deepEqual(first.alphas(), { spy: 0.25 / 168 });
   assert.throws(() => createWatch({ schema, store, monitors: [spy, spy] }), /Two monitors are named "spy"/);
 });
+
+test("a cron job that fires twice in one step sends notices with the same ids, so a sink can drop the second", async () => {
+  const store = memoryStore({ events: incident(10) });
+  const make = () => createWatch({ schema, store, monitors: [share()] });
+  // Two invocations a minute apart, each loading the state before the other has saved it.
+  const at = START + 3 * HOUR;
+  const [first, second] = await Promise.all([make().tick(at), make().tick(at + 60_000)]);
+  assert.equal(first.notices.length, 1);
+  assert.deepEqual(second.notices.map((n) => n.id), first.notices.map((n) => n.id));
+  assert.equal(first.notices[0].alert.id, `3h share of bug@${at}`);
+  // The next step's alert is another one.
+  const fresh = memoryStore({ events: incident(10) });
+  assert.equal((await createWatch({ schema, store: fresh, monitors: [share()] }).tick(at + HOUR)).notices[0].alert.id, `3h share of bug@${at + HOUR}`);
+});

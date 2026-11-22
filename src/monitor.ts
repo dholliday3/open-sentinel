@@ -54,7 +54,12 @@ export interface Monitor {
 }
 
 export interface Alert {
-  /** Stable for this alert, so a sink that is told twice can tell. */
+  /**
+   * Stable for this alert, so a sink that is told twice can tell. A one-event alert is named for
+   * its monitor and event; any other for its monitor and the step it fired in (`at` rounded down
+   * to `stepMs`), so a tick that runs twice in one step, by a retried or doubled cron job, raises
+   * the same id.
+   */
   id: string;
   monitor: string;
   severity: Severity;
@@ -151,6 +156,7 @@ export const createRunner = ({ monitors, gates = {}, stepMs = HOUR, budget = {},
       const planned = changes.filter((change) => change.expect !== undefined).map((change) => ({ change, from: change.at, to: change.at + change.expect!.forMs }));
       const context = { since: since ?? now - stepMs, excluded: [...excluded, ...ownStretch.values(), ...planned], gates, changes };
       const tick: Tick = { fired: [], resolved: [], noData: [] };
+      const stepId = (monitor: Monitor): string => `${monitor.name}@${Math.floor(now / stepMs) * stepMs}`;
       // Muted while the stretch the alert is about overlaps the stretch a change predicted.
       const mutedBy = (monitor: Monitor): string | undefined =>
         planned.find((plan) => monitor.signal !== undefined && plan.change.expect!.signals.includes(monitor.signal) && now >= plan.from && now - monitor.windowMs < plan.to)?.change.id;
@@ -203,12 +209,12 @@ export const createRunner = ({ monitors, gates = {}, stepMs = HOUR, budget = {},
         }
         const current = open.get(monitor.name);
         if (!current) {
-          open.set(monitor.name, { firstAt: now, lastAt: now, alert: raise(monitor, { id: `${monitor.name}@${now}`, detail: result.detail }) });
+          open.set(monitor.name, { firstAt: now, lastAt: now, alert: raise(monitor, { id: stepId(monitor), detail: result.detail }) });
         } else {
           current.lastAt = now;
           if (current.alert.mutedBy !== undefined && mutedBy(monitor) === undefined) {
             // It opened inside a planned stretch and is still firing after it: no longer what was planned.
-            current.alert = raise(monitor, { id: `${monitor.name}@${now}`, detail: result.detail });
+            current.alert = raise(monitor, { id: stepId(monitor), detail: result.detail });
           }
         }
         if (excludePagesMs > 0 && monitor.severity === "page" && monitor.tested) {

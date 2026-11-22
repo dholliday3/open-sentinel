@@ -105,6 +105,8 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
   shows the cutoff each monitor got.
 - **One alert per episode.** A monitor that keeps firing raises one alert, and a `resolved`
   notice once it has been clear for the rearm time (12 hours for pages, 3 days for digests).
+  An alert's id names its monitor and the step it fired in (or, for one event, the event), so a
+  tick that runs twice in one step raises the same ids.
 - **Planned changes.** A change with `expect` mutes the alerts it predicted and is left out of
   every baseline. An alert still firing after the planned stretch is raised then.
 - **Known incidents.** `watch.exclude(interval)` leaves a confirmed incident out of later

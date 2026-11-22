@@ -12,6 +12,7 @@ what open-sentinel does when a part fails, and the rules the design holds to.
 | A sink throws | The others still get theirs. The failed one is offered the same items again, with anything newer, on the next batch or tick. `undelivered` says which sink and why. |
 | The process restarts | Open episodes, events already alerted on and undelivered notices are in the store (`saveState`). A cron job that starts fresh for every tick works. |
 | The process dies while sending | A notice is saved before it is sent, so it is sent again. Delivery is at least once. |
+| A cron job fires twice | Both runs alert. Within one step (`stepMs`) they raise the same alert and notice ids, because an alert is named for its monitor and the step it fired in, so a sink that drops an id it has seen (PagerDuty's `dedup_key`) pages once. |
 | An event is stored late | A one-event monitor still pages for it, up to `lateMs` after it was written. Share monitors count it from the next tick. |
 | The stream stops | `silenceMonitor` fires. Share monitors say `no_data`, and open episodes stay open. |
 | You reword a question | The schema's version changes, and monitors on the new version start with no baseline. `upgrade` moves history across for the cost of the changed questions only. |
@@ -23,9 +24,11 @@ Two limits on these guarantees:
 - **Undelivered labeled events are held in memory**, up to 10,000 per sink, not in the store. A
   process that dies loses them; fill the metrics backend again from the store. Undelivered
   notices are kept in the store, up to 1,000 per sink.
-- **Run each watch in one place.** Two processes ticking the same watch over the same store will
-  both alert, and will overwrite each other's state. Two different watches over one store need a
-  `stateKey` each.
+- **Run each watch in one place.** Two processes ticking the same watch over the same store both
+  alert (with the same ids within a step, as above) and overwrite each other's state: the last
+  save wins. `Store` has no compare-and-set, so the watch can't refuse a stale save; a check
+  that reads the state back before saving would still let two ticks through. Two different
+  watches over one store need a `stateKey` each.
 
 ## Rules the design holds to
 
