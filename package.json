@@ -27,7 +27,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "npm run build",
+    "prepare": "npm run build",
     "test": "node --test \"src/**/*.test.mjs\" \"examples/**/*.test.mjs\"",
     "type-check": "tsc -p tsconfig.json"
   },
