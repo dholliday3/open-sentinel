@@ -1,13 +1,14 @@
 // The code in README.md and docs/reference.md, kept here so the type-check holds it to the real
 // API. readme.test.mjs runs `quickstart` with the model's reply stubbed; the rest only has to
-// compile. When you change a snippet in either file, change it here.
+// compile. When you change a snippet in either file, change it here. The README's real-world
+// examples are in recipes.ts.
 import { test } from "node:test";
 import { auditSample, backtestQuestion, choice, consoleSink, count, createPipeline, createWatch, DAY, decisionLabeler, defineSchema, eventMonitor, fitGates, HOUR, jsonlStore, shareMonitors, silenceMonitor, toolsFor, viewOf, yesNo } from "../src/index.ts";
 import type { LabeledEvent, Labeler, Monitor, Sink, Store, TextEvent, Tool } from "../src/index.ts";
 import { storeContract } from "../src/testing.ts";
 
 // ---- README: the first example ------------------------------------------------------------
-const support = defineSchema({
+export const support = defineSchema({
   name: "support",
   questions: {
     area: choice("Which part of the product is the message about?", {

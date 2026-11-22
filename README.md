@@ -140,6 +140,228 @@ flowchart LR
 
 Too little data is its own answer (`no_data`). It never alerts, and never counts as all clear.
 
+## Real-world examples
+
+Each one continues the quickstart and shows only what changes. Import what a snippet names from
+`open-sentinel`. The snippets are type-checked in [`examples/recipes.ts`](examples/recipes.ts), and
+[`examples/recipes.test.mjs`](examples/recipes.test.mjs) runs each one on synthetic messages.
+
+<details>
+<summary><strong>After a release, customers say their invoice total is wrong</strong></summary>
+
+<br>
+
+Nothing throws and nothing slows down, so error and latency monitors stay green. The first sign is
+what customers write.
+
+```ts
+const billing = defineSchema({
+  name: "billing",
+  questions: { invoice_wrong: yesNo("Does the customer say an invoice total is wrong?") },
+});
+const release: Change = {
+  id: "invoices-4.12.0", at: Date.parse("2026-11-20T15:00:00Z"), kind: "release",
+  what: "invoices 4.12.0: new PDF renderer", scope: { version: "4.12.0" },
+};
+await store.recordChange(release);
+const watch = createWatch({
+  schema: billing,
+  store,
+  monitors: [
+    ...shareMonitors({ signals: ["invoice_wrong"] }),
+    exposureMonitor({ change: release, signal: "invoice_wrong" }),
+  ],
+  sinks: [consoleSink()],
+});
+```
+
+Ingest each message with the `version` its customer is on. The 3-hour share pages and names the
+release: `fired page: 3h share of invoice_wrong; likely invoices 4.12.0: new PDF renderer`. Read
+the quoted messages in `notice.examples`, then roll back.
+
+</details>
+
+<details>
+<summary><strong>One customer says they can see another company's data</strong></summary>
+
+<br>
+
+It is one message among hundreds, with no error and no spike. It has to page on its own.
+
+The quickstart already watches `eventMonitor({ signal: "data_exposure" })`. This sink pages
+PagerDuty with the question and the message:
+
+```ts
+const pagerDuty: Sink = {
+  notify: async (notices) => {
+    for (const { kind, alert, question, examples } of notices) {
+      const quote = examples?.[0]?.text ?? "";
+      const response = await fetch("https://events.pagerduty.com/v2/enqueue", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          routing_key: process.env.PAGERDUTY_ROUTING_KEY,
+          event_action: kind === "fired" ? "trigger" : "resolve",
+          dedup_key: alert.id,
+          payload: { summary: `${question} "${quote}"`, source: "support", severity: "critical" },
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`PagerDuty answered ${response.status}`);
+      }
+    }
+  },
+};
+```
+
+Put it in the watch's `sinks`. The incident reads `Does the customer say they can see another
+business's information? "I can see another company's customers in my account"`. The dedup key is
+the alert's id, so a retried send, or a cron job that fired twice, opens one incident. To post the
+whole notice to your own endpoint instead, use `webhookSink`.
+
+</details>
+
+<details>
+<summary><strong>Android customers can't sign in after an app update</strong></summary>
+
+<br>
+
+Sign-in fails inside the app, so your servers see fewer requests, not errors. Only one platform is
+affected, so the rise is diluted across everyone.
+
+```ts
+const android: Change = {
+  id: "android-4.12.0", at: Date.parse("2026-11-20T15:00:00Z"), kind: "release",
+  what: "Android 4.12.0: new sign-in library", scope: { version: "4.12.0" },
+};
+await store.recordChange(android);
+const monitors = [
+  ...shareMonitors({ signals: ["area=login"], where: { platform: "android" } }),
+  exposureMonitor({ change: android, signal: "area=login" }),
+];
+```
+
+Add these to the quickstart watch's `monitors`, and ingest each message with
+`tags: { platform, version }`. `3h share of area=login {platform:android}` pages with Android 4.12.0
+as the likely cause. Pause the rollout and check the new library.
+
+</details>
+
+<details>
+<summary><strong>A pricing email brings a wave of billing questions that shouldn't page</strong></summary>
+
+<br>
+
+Here the rise is real and planned. A share monitor would page on it, and the wave would sit in next
+week's baseline, hiding a real rise.
+
+```ts
+await store.recordChange({
+  id: "price-email",
+  at: Date.parse("2026-12-01T14:00:00Z"),
+  kind: "campaign",
+  what: "email to every customer about new prices",
+  expect: { signals: ["area=billing", "*"], forMs: 2 * DAY },
+});
+```
+
+The alert is still raised, marked `mutedBy: "price-email"` in what `tick` returns, but no notice
+goes out, and the two days stay out of later baselines. If billing questions are still high after
+two days, it pages then.
+
+</details>
+
+<details>
+<summary><strong>Your AI support agent starts making promises after a prompt change</strong></summary>
+
+<br>
+
+The model answers fast and returns no errors. A promise it shouldn't make looks like any other
+reply.
+
+```ts
+const transcripts = defineSchema({
+  name: "agent",
+  questions: {
+    off_policy: yesNo("Did the assistant promise something the refund policy doesn't allow?"),
+    wants_human: yesNo("Did the customer ask to talk to a person?"),
+  },
+});
+const prompt: Change = {
+  id: "prompt-v13", at: Date.parse("2026-11-20T15:00:00Z"), kind: "config",
+  what: "support agent prompt v13", scope: { prompt: "v13" }, randomized: true,
+};
+await store.recordChange(prompt);
+const watch = createWatch({
+  schema: transcripts,
+  store,
+  monitors: [
+    ...shareMonitors({ signals: transcripts.signals }),
+    ...transcripts.signals.map((signal) => exposureMonitor({ change: prompt, signal })),
+  ],
+  sinks: [consoleSink()],
+});
+```
+
+Ingest each exchange, the customer's message and the agent's reply, as one event tagged with the
+prompt that answered: `tags: { prompt: "v13" }`. `randomized: true` says conversations were
+assigned to v13 at random, so they can be compared with the rest as they are.
+`off_policy among events exposed to prompt-v13` fires with the prompt as the likely cause. Read
+the quoted replies, then roll the prompt back.
+
+</details>
+
+<details>
+<summary><strong>Text replies from customers stop arriving</strong></summary>
+
+<br>
+
+When the SMS provider's webhook breaks, nothing errors: no requests means no failed requests. Share
+monitors have nothing to count and say `no_data`.
+
+```ts
+const texts = defineSchema({
+  name: "texts",
+  questions: { wants_stop: yesNo("Does the customer ask to stop getting texts?") },
+});
+const watch = createWatch({
+  schema: texts,
+  store,
+  monitors: [silenceMonitor({ windowMs: HOUR, periodMs: DAY, minBefore: 5 })],
+  sinks: [consoleSink()],
+});
+```
+
+It fires when an hour that had at least five replies the day before has none:
+`fired page: no events`. Check that the provider still sends to your webhook, and that it gets a
+200 back.
+
+</details>
+
+<details>
+<summary><strong>A queue worker must not lose a message the model couldn't read</strong></summary>
+
+<br>
+
+Ack each message as you read it, and one the labeler failed on is gone. Ack when the source ends,
+and a queue that never ends never acks.
+
+```ts
+await pipeline.run(queue.messages(), {
+  onBatch: async ({ events, failed }) => {
+    const unread = new Set(failed.map((failure) => failure.id));
+    await queue.ack(events.filter((event) => !unread.has(event.id)));
+    await queue.retryLater(events.filter((event) => unread.has(event.id)));
+  },
+});
+```
+
+`onBatch` runs after each batch is stored. A failed event isn't stored, so sending it again labels
+it again. Keeping events in your own database? `storeContract` from `open-sentinel/testing` checks
+your `Store` ([reference](docs/reference.md#writing-your-own)).
+
+</details>
+
 ## Usage
 
 These continue the quickstart. Also import `DAY`, `backtestQuestion`, `auditSample` and `fitGates`.
