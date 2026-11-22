@@ -8,7 +8,11 @@ import type { LabeledEvent, Labeler, Monitor, Sink, Store, TextEvent, Tool } fro
 const support = defineSchema({
   name: "support",
   questions: {
-    area: choice("Which part of the product is the message about?", { login: "Signing in", billing: "Their plan or charges", other: "Anything else" }),
+    area: choice("Which part of the product is the message about?", {
+      login: "Signing in",
+      billing: "Their plan or charges",
+      other: "Anything else",
+    }),
     is_bug_report: yesNo("Does the customer say something isn't working as it should?"),
     data_exposure: yesNo("Does the customer say they can see another business's information?"),
   },
@@ -16,17 +20,30 @@ const support = defineSchema({
 
 export const quickstart = async (): Promise<void> => {
   const store = jsonlStore("./signals");
-  const labeler = decisionLabeler({ model: "typesafe-ai/jev-1.14.0", apiKey: process.env.AI_GATEWAY_API_KEY! });
+  const labeler = decisionLabeler({
+  model: "typesafe-ai/jev-1.14.0",
+  apiKey: process.env.AI_GATEWAY_API_KEY!,
+});
   const pipeline = createPipeline({ schema: support, labeler, store });
 
   await pipeline.ingest([
-    { id: "msg-1", at: Date.now(), text: "I can see another company's customers in my account", unit: "account-42", tags: { version: "4.12.0" } },
+    {
+    id: "msg-1",
+    at: Date.now(),
+    text: "I can see another company's customers in my account",
+    unit: "account-42",
+    tags: { version: "4.12.0" },
+  },
   ]);
 
   const watch = createWatch({
     schema: support,
     store,
-    monitors: [...shareMonitors({ signals: support.signals }), eventMonitor({ signal: "data_exposure" }), silenceMonitor({ windowMs: 3 * HOUR })],
+    monitors: [
+    ...shareMonitors({ signals: support.signals }),
+    eventMonitor({ signal: "data_exposure" }),
+    silenceMonitor({ windowMs: 3 * HOUR }),
+  ],
     sinks: [consoleSink()],
   });
   await watch.tick();
@@ -36,15 +53,29 @@ export const quickstart = async (): Promise<void> => {
 declare const reviewed: (event: LabeledEvent) => boolean;
 
 export const recordChanges = async (store: Store): Promise<void> => {
-  await store.recordChange({ id: "release-4.12.0", at: Date.parse("2026-11-20T15:00:00Z"), kind: "release", what: "mobile 4.12.0: new sign-in library", scope: { version: "4.12.0" } });
-  await store.recordChange({ id: "price-email", at: Date.now(), kind: "campaign", what: "email about new prices", expect: { signals: ["area=billing", "*"], forMs: 2 * DAY } });
+  await store.recordChange({
+  id: "release-4.12.0",
+  at: Date.parse("2026-11-20T15:00:00Z"),
+  kind: "release",
+  what: "mobile 4.12.0: new sign-in library",
+  scope: { version: "4.12.0" },
+});
+  await store.recordChange({
+  id: "price-email",
+  at: Date.now(),
+  kind: "campaign",
+  what: "email about new prices",
+  expect: { signals: ["area=billing", "*"], forMs: 2 * DAY },
+});
 };
 
 export const tryQuestion = async (store: Store, labeler: Labeler): Promise<void> => {
   const tried = await backtestQuestion({
     events: await store.events({ schema: support.id, from: Date.now() - 7 * DAY }),
     key: "total_differs",
-    question: yesNo("Does the customer say an invoice their customer received shows a different total than the app?"),
+    question: yesNo(
+    "Does the customer say an invoice their customer received shows a different total than the app?",
+  ),
     labeler,
   });
   console.log(tried.cost, tried.signals[0]?.byBucket, tried.signals[0]?.surest);

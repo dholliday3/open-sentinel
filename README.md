@@ -24,29 +24,49 @@ emails, reviews, an AI agent's transcripts) and want the alerts in code, next to
 deploys and data. It is a TypeScript library with no runtime dependencies.
 
 ```ts
-import { choice, consoleSink, createPipeline, createWatch, decisionLabeler, defineSchema, eventMonitor, HOUR, jsonlStore, shareMonitors, silenceMonitor, yesNo } from "open-sentinel";
+import {
+  choice, consoleSink, createPipeline, createWatch, decisionLabeler, defineSchema,
+  eventMonitor, HOUR, jsonlStore, shareMonitors, silenceMonitor, yesNo,
+} from "open-sentinel";
 
 const support = defineSchema({
   name: "support",
   questions: {
-    area: choice("Which part of the product is the message about?", { login: "Signing in", billing: "Their plan or charges", other: "Anything else" }),
+    area: choice("Which part of the product is the message about?", {
+      login: "Signing in",
+      billing: "Their plan or charges",
+      other: "Anything else",
+    }),
     is_bug_report: yesNo("Does the customer say something isn't working as it should?"),
     data_exposure: yesNo("Does the customer say they can see another business's information?"),
   },
 });
 
 const store = jsonlStore("./signals");
-const labeler = decisionLabeler({ model: "typesafe-ai/jev-1.14.0", apiKey: process.env.AI_GATEWAY_API_KEY! });
+const labeler = decisionLabeler({
+  model: "typesafe-ai/jev-1.14.0",
+  apiKey: process.env.AI_GATEWAY_API_KEY!,
+});
 const pipeline = createPipeline({ schema: support, labeler, store });
 
 await pipeline.ingest([
-  { id: "msg-1", at: Date.now(), text: "I can see another company's customers in my account", unit: "account-42", tags: { version: "4.12.0" } },
+  {
+    id: "msg-1",
+    at: Date.now(),
+    text: "I can see another company's customers in my account",
+    unit: "account-42",
+    tags: { version: "4.12.0" },
+  },
 ]);
 
 const watch = createWatch({
   schema: support,
   store,
-  monitors: [...shareMonitors({ signals: support.signals }), eventMonitor({ signal: "data_exposure" }), silenceMonitor({ windowMs: 3 * HOUR })],
+  monitors: [
+    ...shareMonitors({ signals: support.signals }),
+    eventMonitor({ signal: "data_exposure" }),
+    silenceMonitor({ windowMs: 3 * HOUR }),
+  ],
   sinks: [consoleSink()],
 });
 await watch.tick();
@@ -117,8 +137,20 @@ from `open-sentinel` too.
 ### Record what shipped
 
 ```ts
-await store.recordChange({ id: "release-4.12.0", at: Date.parse("2026-11-20T15:00:00Z"), kind: "release", what: "mobile 4.12.0: new sign-in library", scope: { version: "4.12.0" } });
-await store.recordChange({ id: "price-email", at: Date.now(), kind: "campaign", what: "email about new prices", expect: { signals: ["area=billing", "*"], forMs: 2 * DAY } });
+await store.recordChange({
+  id: "release-4.12.0",
+  at: Date.parse("2026-11-20T15:00:00Z"),
+  kind: "release",
+  what: "mobile 4.12.0: new sign-in library",
+  scope: { version: "4.12.0" },
+});
+await store.recordChange({
+  id: "price-email",
+  at: Date.now(),
+  kind: "campaign",
+  what: "email about new prices",
+  expect: { signals: ["area=billing", "*"], forMs: 2 * DAY },
+});
 ```
 
 `scope` names the tags of the events a change reached. Each alert's notice lists up to three
@@ -133,7 +165,9 @@ stretch is left out of every baseline.
 const tried = await backtestQuestion({
   events: await store.events({ schema: support.id, from: Date.now() - 7 * DAY }),
   key: "total_differs",
-  question: yesNo("Does the customer say an invoice their customer received shows a different total than the app?"),
+  question: yesNo(
+    "Does the customer say an invoice their customer received shows a different total than the app?",
+  ),
   labeler,
 });
 console.log(tried.cost, tried.signals[0]?.byBucket, tried.signals[0]?.surest);
