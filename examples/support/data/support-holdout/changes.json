@@ -1,0 +1,38 @@
+[
+  {
+    "at": 1793120400000,
+    "what": "web: estimate templates"
+  },
+  {
+    "at": 1793370000000,
+    "what": "api: Google Calendar sync retries"
+  },
+  {
+    "at": 1793714400000,
+    "what": "payments: new default payout schedule for all accounts"
+  },
+  {
+    "at": 1793880000000,
+    "what": "marketing: Google Business Profile webinar and invite email"
+  },
+  {
+    "at": 1794072600000,
+    "what": "api: SMS routing moved to a new carrier campaign"
+  },
+  {
+    "at": 1794167100000,
+    "what": "web: customer list search"
+  },
+  {
+    "at": 1794312900000,
+    "what": "assistant: new availability tool for booking"
+  },
+  {
+    "at": 1794580200000,
+    "what": "mobile 4.13.0 (iOS only): faster photo upload"
+  },
+  {
+    "at": 1794668400000,
+    "what": "api: invoice reminders wording"
+  }
+]

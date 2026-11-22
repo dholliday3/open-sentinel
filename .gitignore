@@ -1,0 +1,6 @@
+# Dev tools, installed by `npm install`. The package itself has no dependencies.
+node_modules/
+# Built by `npm run build` for publishing. The tests and examples run the TypeScript in src/ directly.
+dist/
+# Keep the lockfile: CI installs from it.
+!package-lock.json

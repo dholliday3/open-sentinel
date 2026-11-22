@@ -1,0 +1,59 @@
+{
+  "start": 1793016000000,
+  "days": 21,
+  "planted": [
+    {
+      "id": "android_signin",
+      "kind": "incident",
+      "from": 1794232800000,
+      "to": 1794276000000,
+      "tags": {
+        "platform": "android",
+        "app_version": "4.12.0"
+      },
+      "truth": "Google sign-in broke on Android in mobile release 4.12.0 (deployed day 15, 09:40 ET). Android users only; iOS and web fine. Started about 10:00 ET day 15."
+    },
+    {
+      "id": "invoice_pdf_total",
+      "kind": "incident",
+      "from": 1794416400000,
+      "to": 1794600000000,
+      "tags": {},
+      "truth": "The invoice PDF renderer v2 (deployed day 17, 12:30 ET) adds tax twice on the PDF; the invoice in the app is right. Started about 13:00 ET day 17. All platforms."
+    },
+    {
+      "id": "price_change",
+      "kind": "incident",
+      "from": 1793797200000,
+      "to": 1794484800000,
+      "tags": {},
+      "truth": "The price increase announced by email on day 10 drives a slow rise in price complaints and churn intent over the following week."
+    },
+    {
+      "id": "booking_launch",
+      "kind": "benign",
+      "from": 1793970000000,
+      "to": 1793998800000,
+      "tags": {},
+      "truth": "Benign: questions after the online-booking launch email on day 12. A volume and topic spike, but nothing is broken."
+    },
+    {
+      "id": "data_exposure",
+      "kind": "incident",
+      "from": 1794592800000,
+      "to": 1794592800001,
+      "tags": {
+        "platform": "web"
+      },
+      "truth": "A single report of one business seeing another business's customers. Must be escalated at once."
+    },
+    {
+      "id": "exposure_decoy",
+      "kind": "benign",
+      "from": 1793448000000,
+      "to": 1794657600000,
+      "tags": {},
+      "truth": "Benign look-alikes of a data exposure: their own data, not another business's."
+    }
+  ]
+}

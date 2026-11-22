@@ -1,0 +1,40 @@
+{
+  "name": "open-sentinel",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Typed questions about text, answered as probabilities, turned into metrics, monitors and alerts.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./testing": {
+      "types": "./dist/src/testing.d.ts",
+      "default": "./dist/src/testing.js"
+    }
+  },
+  "bin": {
+    "open-sentinel-mcp": "./dist/bin/mcp.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "test": "node --test \"src/**/*.test.mjs\" \"examples/**/*.test.mjs\"",
+    "type-check": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@opentelemetry/otlp-transformer": "0.211.0",
+    "@types/node": "^22.19.3",
+    "typescript": "^6.0.3"
+  }
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "at": 1793200500000,
+    "what": "web: new filters on the invoice list"
+  },
+  {
+    "at": 1793473200000,
+    "what": "api: faster Google Calendar sync"
+  },
+  {
+    "at": 1793797200000,
+    "what": "billing: new prices from next month; price-change email sent to every account"
+  },
+  {
+    "at": 1793968200000,
+    "what": "marketing: online booking launch email sent to every account"
+  },
+  {
+    "at": 1794082800000,
+    "what": "web: website editor color picker"
+  },
+  {
+    "at": 1794231600000,
+    "what": "mobile 4.12.0 (Android and iOS): new sign-in library"
+  },
+  {
+    "at": 1794414600000,
+    "what": "api: invoice PDF renderer v2"
+  },
+  {
+    "at": 1794578700000,
+    "what": "api: payout schedule settings"
+  },
+  {
+    "at": 1794679200000,
+    "what": "mobile 4.12.1 (iOS only): crash fix in photos"
+  }
+]

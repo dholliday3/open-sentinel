@@ -1,0 +1,67 @@
+{
+  "start": 1793016000000,
+  "days": 21,
+  "planted": [
+    {
+      "id": "texts_failing",
+      "kind": "incident",
+      "from": 1794074400000,
+      "to": 1794153600000,
+      "tags": {},
+      "truth": "Texts from business numbers stopped delivering after an SMS routing change (day 13, 13:30). All plans and platforms. Started about 14:00 day 13."
+    },
+    {
+      "id": "assistant_double_booking",
+      "kind": "incident",
+      "from": 1794315600000,
+      "to": 1794517200000,
+      "tags": {},
+      "truth": "Remy's new availability tool (day 16, 08:15) ignores existing visits and days off, so he double-books. Started about 09:00 day 16."
+    },
+    {
+      "id": "payout_delays",
+      "kind": "incident",
+      "from": 1793714400000,
+      "to": 1794398400000,
+      "tags": {},
+      "truth": "A payout schedule change (day 9, 10:00) moved accounts to slower payouts; complaints build over the following week."
+    },
+    {
+      "id": "ios_photo_crash",
+      "kind": "incident",
+      "from": 1794582000000,
+      "to": 1794700800000,
+      "tags": {
+        "platform": "ios",
+        "app_version": "4.13.0"
+      },
+      "truth": "The iOS app 4.13.0 (day 19, 10:30) crashes when attaching photos. iOS 4.13.0 only. Started about 11:00 day 19."
+    },
+    {
+      "id": "webinar_questions",
+      "kind": "benign",
+      "from": 1793887200000,
+      "to": 1793916000000,
+      "tags": {},
+      "truth": "Benign: questions after a Google Business Profile webinar on day 11."
+    },
+    {
+      "id": "account_takeover",
+      "kind": "incident",
+      "from": 1794499200000,
+      "to": 1794499200001,
+      "tags": {
+        "platform": "web"
+      },
+      "truth": "A single report of an account taken over by an outsider. Must be escalated at once."
+    },
+    {
+      "id": "takeover_decoy",
+      "kind": "benign",
+      "from": 1793361600000,
+      "to": 1794657600000,
+      "tags": {},
+      "truth": "Benign look-alikes: changes by people inside their own business."
+    }
+  ]
+}

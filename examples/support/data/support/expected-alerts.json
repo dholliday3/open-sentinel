@@ -1,0 +1,146 @@
+[
+  {
+    "monitor": "3h share of area=scheduling_booking",
+    "at": 1793973600000
+  },
+  {
+    "monitor": "24h share of area=scheduling_booking",
+    "at": 1793977200000
+  },
+  {
+    "monitor": "3-day share of area=scheduling_booking",
+    "at": 1793977200000
+  },
+  {
+    "monitor": "conversation volume",
+    "at": 1793980800000
+  },
+  {
+    "monitor": "3-day share of frustration>=2&area=billing_plan",
+    "at": 1794200400000
+  },
+  {
+    "monitor": "3h share of area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3h share of blocked",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "24h share of area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "24h share of blocked",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3h share of is_bug_report&area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3h share of frustration>=2&area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3h share of is_bug_report {platform:android}",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3h share of blocked {platform:android}",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "24h share of is_bug_report&area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "24h share of frustration>=2&area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "24h share of blocked {platform:android}",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3-day share of blocked",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3-day share of is_bug_report&area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3-day share of frustration>=2&area=login_access",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3-day share of blocked {platform:android}",
+    "at": 1794236400000
+  },
+  {
+    "monitor": "3h share of frustration>=2",
+    "at": 1794240000000
+  },
+  {
+    "monitor": "24h share of is_bug_report {platform:android}",
+    "at": 1794240000000
+  },
+  {
+    "monitor": "3-day share of area=login_access",
+    "at": 1794243600000
+  },
+  {
+    "monitor": "3-day share of is_bug_report {platform:android}",
+    "at": 1794243600000
+  },
+  {
+    "monitor": "24h share of is_bug_report",
+    "at": 1794247200000
+  },
+  {
+    "monitor": "24h share of frustration>=2",
+    "at": 1794247200000
+  },
+  {
+    "monitor": "3-day share of frustration>=2",
+    "at": 1794247200000
+  },
+  {
+    "monitor": "3-day share of is_bug_report",
+    "at": 1794261600000
+  },
+  {
+    "monitor": "3-day share of price_complaint",
+    "at": 1794297600000
+  },
+  {
+    "monitor": "24h share of area=invoices_estimates",
+    "at": 1794499200000
+  },
+  {
+    "monitor": "24h share of is_bug_report&area=invoices_estimates",
+    "at": 1794499200000
+  },
+  {
+    "monitor": "24h share of frustration>=2&area=invoices_estimates",
+    "at": 1794502800000
+  },
+  {
+    "monitor": "3-day share of is_bug_report&area=invoices_estimates",
+    "at": 1794520800000
+  },
+  {
+    "monitor": "3-day share of frustration>=2&area=invoices_estimates",
+    "at": 1794542400000
+  },
+  {
+    "monitor": "3-day share of area=invoices_estimates",
+    "at": 1794567600000
+  },
+  {
+    "monitor": "event: data_exposure",
+    "at": 1794596400000
+  }
+]
