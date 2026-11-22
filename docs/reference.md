@@ -175,7 +175,8 @@ text only with `includeText`.
   affected, when it started, the likely cause, and the next step. A reply without one of the
   five verdicts comes back as inconclusive.
 - `mcpServer`, and the `open-sentinel-mcp` command over a `jsonlStore` folder, serve the same
-  tools to any MCP client:
+  tools to any MCP client. The command sees what a pipeline writing the folder adds, because a
+  `jsonlStore` reads its files again whenever they have changed:
 
   ```bash
   npx open-sentinel-mcp ./signals      # from an install
@@ -202,8 +203,10 @@ const mine: Labeler = {
 `id` is stored on every event: change it when the model changes. Use `probability: "none"` if it
 only gives yes or no.
 
-**A store** is eight methods. `memoryStore` in `src/store.ts` is the reference, and
-`src/store.test.mjs` runs the same tests against every store: add yours to its list.
+**A store** is eight methods. `memoryStore` in `src/store.ts` is the reference.
+`storeContract` from `open-sentinel/testing` is what every store must do, as checks for any test
+runner on Node; `make` must give an empty store each time. The built-in stores run it in
+`src/store.test.mjs`.
 
 ```ts
 import type { Store } from "open-sentinel";
@@ -218,6 +221,15 @@ const postgres: Store = {
   loadState: async (key) => { /* select value where key = $1 */ },
   saveState: async (key, value) => { /* upsert by key */ },
 };
+```
+
+```ts
+import { test } from "node:test";
+import { storeContract } from "open-sentinel/testing";
+
+for (const { name, run } of storeContract(() => freshPostgresStore())) {
+  test(`postgres: ${name}`, run);
+}
 ```
 
 **A source** is anything you can loop over that yields `{ id, at, text, unit?, tags? }`:

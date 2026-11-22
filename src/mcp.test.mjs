@@ -74,6 +74,13 @@ test("the official MCP client can use the command-line server", { skip: official
     assert.deepEqual(JSON.parse(result.content[0].text), [{ id: "c1", at: "2026-11-01T01:00Z", kind: "deploy", what: "api: renderer v2" }]);
     const bad = await client.callTool({ name: "changes", arguments: { from: "soon", to: "later" } });
     assert.equal(bad.isError, true);
+    // The server keeps running beside the pipeline that writes the folder, and sees what it adds.
+    await store.recordChange({ id: "c2", at: start + 47 * HOUR, kind: "flag", what: "pdf-v2 on" });
+    await store.append([{ id: "late", at: start + 47 * HOUR, text: "the invoice total is wrong", schema: "test@1", labeler: "test-labeler@1", probability: "native", signals: { bug: 0.95 } }]);
+    const later = await client.callTool({ name: "changes", arguments: { from: new Date(start).toISOString(), to: new Date(start + 48 * HOUR).toISOString() } });
+    assert.deepEqual(JSON.parse(later.content[0].text).map((change) => change.id), ["c1", "c2"]);
+    const newest = await client.callTool({ name: "messages", arguments: { signal: "bug", from: new Date(start + 46 * HOUR).toISOString(), to: new Date(start + 48 * HOUR).toISOString() } });
+    assert.ok(newest.content[0].text.includes("the invoice total is wrong"), newest.content[0].text.slice(0, 300));
   } finally {
     await client.close();
   }

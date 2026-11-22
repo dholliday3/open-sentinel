@@ -1,8 +1,10 @@
 // The code in README.md and docs/reference.md, kept here so the type-check holds it to the real
 // API. readme.test.mjs runs `quickstart` with the model's reply stubbed; the rest only has to
 // compile. When you change a snippet in either file, change it here.
+import { test } from "node:test";
 import { auditSample, backtestQuestion, choice, consoleSink, count, createPipeline, createWatch, DAY, decisionLabeler, defineSchema, eventMonitor, fitGates, HOUR, jsonlStore, shareMonitors, silenceMonitor, toolsFor, viewOf, yesNo } from "../src/index.ts";
 import type { LabeledEvent, Labeler, Monitor, Sink, Store, TextEvent, Tool } from "../src/index.ts";
+import { storeContract } from "../src/testing.ts";
 
 // ---- README: the first example ------------------------------------------------------------
 const support = defineSchema({
@@ -101,6 +103,7 @@ declare const postToSlack: (text: string, options: { dedupeKey: string }) => Pro
 declare const readRunbook: (area: string) => string;
 declare const sql: { count(query: string, values: unknown[]): Promise<{ yes: number; total: number }> };
 declare const pipeline: ReturnType<typeof createPipeline>;
+declare const freshPostgresStore: () => Store;
 
 export const mine: Labeler = {
   id: "my-classifier@2026-11-01",
@@ -120,6 +123,12 @@ export const postgres: Store = {
   changes: async ({ from: _from, to: _to } = {}) => [],
   loadState: async (_key) => undefined,
   saveState: async (_key, _value) => {},
+};
+
+export const checkPostgres = (): void => {
+  for (const { name, run } of storeContract(() => freshPostgresStore())) {
+    test(`postgres: ${name}`, run);
+  }
 };
 
 export async function* fromQueue(): AsyncGenerator<TextEvent> {

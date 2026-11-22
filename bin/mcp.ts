@@ -3,10 +3,11 @@
 //
 //   node bin/mcp.ts <store folder> [schema id]
 //
-// It reads the folder fresh on every call, so it can sit beside a running pipeline. It serves one
-// schema: the one named, or the one the newest stored event was labeled under. Signal keys are
-// taken from the stored events, and every gate is 0.5; to use a schema's own gates, build the
-// server yourself with `mcpServer` and `toolsFor`.
+// Every call sees what is in the folder at that moment (`jsonlStore` reads again whatever has
+// changed), so it can sit beside a running pipeline. It serves one schema: the one named, or the
+// one the newest stored event was labeled under. Signal keys are taken from the stored events, and
+// every gate is 0.5; to use a schema's own gates, build the server yourself with `mcpServer` and
+// `toolsFor`.
 import { jsonlStore, latestAnswers, mcpServer, serveStdio, toolsFor, viewOf } from "../src/index.ts";
 
 const [dir, named] = process.argv.slice(2);
