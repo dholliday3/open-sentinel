@@ -79,7 +79,8 @@ test("exposure counts only when the events a change reached rose against their o
   assert.ok(blameless.contrast.evidence > 20);
   assert.ok(Math.abs(blameless.rise.evidence) < 3, `rise ${blameless.rise.evidence}`);
   assert.ok(blameless.evidence < 3);
-  assert.equal(blameless.rise.before.total, always.within({ to: 5 * DAY, where: { platform: "ios" } }).length);
+  // Whole 2-day stretches back from the release, as far as the stored events reach: days 1 to 5.
+  assert.equal(blameless.rise.before.total, always.within({ from: DAY, to: 5 * DAY, where: { platform: "ios" } }).length);
 
   const broke = viewOf(stream({ start: 0, hours: 7 * 24, perHour: 30, tags, signals: { bug: (_at, own) => (own.app_version === "4.12.0" ? 0.6 : own.platform === "ios" ? 0.3 : 0.05) } }));
   assert.ok(exposureOf(broke, release, { signal: "bug", until: 7 * DAY }).evidence > 20);

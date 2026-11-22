@@ -31,13 +31,14 @@ const reachOf = (spanMs: number, windowMs: number): number => Math.max(2 * spanM
  * excluded time (see `wholeStretches`). A trailing baseline is its span rounded up to whole
  * windows: 56 for a 3-hour window against a week, three (nine days) for a 3-day window. One
  * that loses stretches to exclusions replaces them from further back, never reaching more than
- * twice its span. A seasonal cycle that excluded time touches is left out.
+ * twice its span. A seasonal cycle that excluded time touches is left out. So is any stretch
+ * that begins before `observedFrom`, the first stored event: time nobody watched would read low.
  */
-const baselineStretches = (baseline: Baseline, now: number, windowMs: number, excluded: readonly Interval[]): Interval[] => {
+const baselineStretches = (baseline: Baseline, now: number, windowMs: number, excluded: readonly Interval[], observedFrom: number): Interval[] => {
   if (baseline.kind === "seasonal") {
-    return Array.from({ length: baseline.cycles }, (_, i) => now - (i + 1) * baseline.periodMs).flatMap((end) => wholeStretches({ end, lengthMs: windowMs, count: 1, earliest: end - windowMs, excluded }));
+    return Array.from({ length: baseline.cycles }, (_, i) => now - (i + 1) * baseline.periodMs).flatMap((end) => wholeStretches({ end, lengthMs: windowMs, count: 1, earliest: Math.max(end - windowMs, observedFrom), excluded }));
   }
-  return wholeStretches({ end: now - windowMs, lengthMs: windowMs, count: stretchesIn(baseline.spanMs, windowMs), earliest: now - windowMs - reachOf(baseline.spanMs, windowMs), excluded });
+  return wholeStretches({ end: now - windowMs, lengthMs: windowMs, count: stretchesIn(baseline.spanMs, windowMs), earliest: Math.max(now - windowMs - reachOf(baseline.spanMs, windowMs), observedFrom), excluded });
 };
 
 export interface ShareMonitorOptions {
@@ -88,7 +89,7 @@ export const shareMonitor = ({ signal, windowMs, baseline = { kind: "trailing", 
       // each customer once per stretch. Counted once over a whole week, an account that writes
       // every day would look far more likely to say yes than it does in any one window.
       const base = { yes: 0, total: 0 };
-      for (const stretch of baselineStretches(baseline, now, windowMs, excluded)) {
+      for (const stretch of baselineStretches(baseline, now, windowMs, excluded, view.events[0]?.at ?? now)) {
         const counted = tally(view.within({ ...stretch, where }), signal, gates);
         base.yes += counted.yes;
         base.total += counted.total;

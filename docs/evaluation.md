@@ -58,7 +58,8 @@ whole 3-day stretch, so the baseline reaches back past them to older weeks.
 prototype this package grew from passed in, a replay raises exactly the alerts on record,
 monitor for monitor and hour for hour. The record is the prototype's, except that counting
 baselines in whole stretches moved its 3-day digest alerts by 1 to 11 hours, each still behind
-the same planted item, and added one behind the iOS photo crash.
+the same planted item, added one behind the iOS photo crash, and dropped one behind the webinar
+email.
 
 ## False alarms
 
@@ -69,7 +70,7 @@ weeks each, 37 weeks in all:
 | | Per week | Budget |
 |---|---|---|
 | False pages | 0.027 | 0.25 |
-| False digest items | 0.081 | 1 |
+| False digest items | 0.162 | 1 |
 
 `node examples/support/budget.ts 10 repeats` does the same with customers who write more than
 once: three in ten arrivals are followed by one to four more from the same customer. 10
@@ -77,8 +78,8 @@ shuffles, 19 weeks:
 
 | Counted | False pages a week | False digest items a week |
 |---|---|---|
-| Per customer (the default) | 0 | 0.162 |
-| Per message | 8.99 (36 times the budget) | 2.26 |
+| Per customer (the default) | 0 | 0.108 |
+| Per message | 8.99 (36 times the budget) | 2.32 |
 
 ## Attribution
 

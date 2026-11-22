@@ -58,7 +58,8 @@ hiding.
   `minBaseline` (30) customers is `no_data`.
 - **Exclusions.** Planned changes, confirmed incidents (`watch.exclude`) and, if you turn on
   `excludePagesMs`, a page's own stretch are left out of baselines. A stretch they touch is
-  left out whole, not trimmed, for the reason above. A trailing baseline replaces the stretches
+  left out whole, not trimmed, for the reason above. So is one that begins before the first
+  stored event: a store younger than the baseline hasn't watched that time. A trailing baseline replaces the stretches
   it loses from further back, never reaching more than twice its span; a seasonal baseline
   drops the cycles they touch.
 

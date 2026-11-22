@@ -102,11 +102,11 @@ const kindsOf = (events: readonly LabeledEvent[], scoped: ReadonlySet<string>): 
  * Either way, matched on every other tag, so iOS events are compared with earlier iOS events. A
  * group that always complained more then shows no rise, and gets no blame.
  *
- * Earlier time is counted in whole stretches as long as the time since the change, as many as fit
- * in `baselineMs`, each customer once per stretch, so "before" and "since" count the same thing.
- * A change older than `baselineMs` has no stretch to compare with. When only a few earlier events
- * carry the scope's tags (a tester who had the flag early), there is too little to compare with
- * and the answer is that it can't say.
+ * Earlier time is counted in whole stretches as long as the time since the change, each customer
+ * once per stretch, so "before" and "since" count the same thing: as many as fit in `baselineMs`
+ * before the change and after the first stored event. When none fit, or only a few earlier
+ * events carry the scope's tags (a tester who had the flag early), there is too little to compare
+ * with and the answer is that it can't say.
  */
 export const exposureOf = (view: EventView, change: Change, { signal, gates, where, until, baselineMs = WEEK }: { signal: string; gates?: Gates; where?: TagFilter; until: number; baselineMs?: number }): Exposure | null => {
   if (!change.scope) {
@@ -124,7 +124,7 @@ export const exposureOf = (view: EventView, change: Change, { signal, gates, whe
   const existed = view.within({ from: start, to: change.at, where }).some(reached);
   const span = Math.max(until - change.at, HOUR);
   const earlier = new Map<string, Counts>();
-  for (const range of wholeStretches({ end: change.at, lengthMs: span, count: Infinity, earliest: start })) {
+  for (const range of wholeStretches({ end: change.at, lengthMs: span, count: Infinity, earliest: Math.max(start, view.events[0]?.at ?? change.at) })) {
     const stretch = view.within({ ...range, where });
     for (const [kind, events] of kindsOf(existed ? stretch.filter(reached) : stretch, scoped)) {
       const counted = countUnits(events, signal, gates);

@@ -35,8 +35,8 @@ test("shareMonitor needs minCount yeses and a baseline worth comparing with", ()
   assert.equal(check(shareMonitor({ signal: "bug", windowMs: 3 * HOUR, minCount: 5 }), few, 9 * DAY).state, "ok");
   assert.equal(check(shareMonitor({ signal: "bug", windowMs: 3 * HOUR, minCount: 3 }), few, 9 * DAY).state, "firing");
   const young = stream({ start: 8 * DAY + 20 * HOUR, hours: 4, perHour: 5, signals: { bug: 1 } });
-  // Five events before the window is no baseline to judge fifteen against.
-  assert.deepEqual(check(shareMonitor({ signal: "bug", windowMs: 3 * HOUR }), young, 9 * DAY), { state: "no_data", detail: { now: "15/15", baseline: "5/5" } });
+  // A stream four hours old has no whole three hours before the window to judge fifteen against.
+  assert.deepEqual(check(shareMonitor({ signal: "bug", windowMs: 3 * HOUR }), young, 9 * DAY), { state: "no_data", detail: { now: "15/15", baseline: "0/0" } });
 });
 
 test("shareMonitor compares a tag value with its own past", () => {
@@ -103,6 +103,17 @@ test("an unchanged stream of customers who write every day raises nothing at any
   assert.ok(Math.abs(shareOf(digest.detail.baseline) - shareOf(digest.detail.now)) < 0.03, `${digest.detail.baseline} against ${digest.detail.now}`);
 });
 
+test("a store younger than the baseline doesn't make it read low: stretches before the first event are left out", () => {
+  // Eight days of history; the 3-day tier would reach back twelve.
+  const events = regulars(8);
+  const digest = check(shareMonitor({ signal: "bug", windowMs: 3 * DAY }), events, 8 * DAY, { alpha: 1e-3 });
+  assert.equal(digest.state, "ok");
+  // One whole 3-day stretch fits after the first event: about as many customers as the window.
+  const [windowTotal, baselineTotal] = [digest.detail.now, digest.detail.baseline].map((counts) => Number(counts.split("/")[1]));
+  assert.ok(Math.abs(baselineTotal / windowTotal - 1) < 0.02, `${digest.detail.baseline} against ${digest.detail.now}`);
+  assert.ok(Math.abs(shareOf(digest.detail.baseline) - shareOf(digest.detail.now)) < 0.04, `${digest.detail.baseline} against ${digest.detail.now}`);
+});
+
 test("excluded time doesn't make a baseline read low: a stretch it touches is left out whole", () => {
   const events = regulars(17);
   const monitor = shareMonitor({ signal: "bug", windowMs: DAY, minCount: 8 });
@@ -152,7 +163,7 @@ test("leaving a flooded day out of the baseline stops other signals from seeming
   // Day 3 brings a flood about something else: ten times the events, none of them bug reports.
   const flood = (at) => at >= 2 * DAY && at < 3 * DAY;
   const events = [
-    ...stream({ start: 0, hours: 9 * 24, perHour: 20, signals: { bug: 0.1 } }),
+    ...stream({ start: -DAY, hours: 10 * 24, perHour: 20, signals: { bug: 0.1 } }),
     ...stream({ start: 2 * DAY, hours: 24, perHour: 200, signals: { bug: 0 }, prefix: "flood", random: seeded(2) }),
   ];
   const monitor = shareMonitor({ signal: "bug", windowMs: DAY, minCount: 8 });
@@ -217,7 +228,7 @@ test("eventMonitor still reports an event stored after the check that covered it
 
 test("exposureMonitor compares events a change reached with the rest and with before, for a while after it ships", () => {
   const change = { id: "pdf-v2", at: DAY, kind: "flag", what: "PDF renderer v2", scope: { "flag:pdf-v2": "on" } };
-  const events = stream({ start: 0, hours: 72, perHour: 30, tags: (random, at) => ({ "flag:pdf-v2": at >= DAY && random() < 0.3 ? "on" : "off" }), signals: { bug: (at, tags) => (tags["flag:pdf-v2"] === "on" ? 0.3 : 0.05) } });
+  const events = stream({ start: -HOUR, hours: 73, perHour: 30, tags: (random, at) => ({ "flag:pdf-v2": at >= DAY && random() < 0.3 ? "on" : "off" }), signals: { bug: (at, tags) => (tags["flag:pdf-v2"] === "on" ? 0.3 : 0.05) } });
   const monitor = exposureMonitor({ change, signal: "bug", forMs: 2 * DAY });
   assert.equal(monitor.name, "bug among events exposed to pdf-v2");
   assert.equal(check(monitor, events, DAY - HOUR).state, "ok");
@@ -227,7 +238,7 @@ test("exposureMonitor compares events a change reached with the rest and with be
   // Nobody had the flag before it shipped, so "before" is everyone, the day before.
   assert.match(during.detail.before, /\/720$/);
   assert.equal(check(monitor, events, 3 * DAY + HOUR).state, "ok");
-  const harmless = stream({ start: 0, hours: 72, perHour: 30, tags: (random, at) => ({ "flag:pdf-v2": at >= DAY && random() < 0.3 ? "on" : "off" }), signals: { bug: 0.05 } });
+  const harmless = stream({ start: -HOUR, hours: 73, perHour: 30, tags: (random, at) => ({ "flag:pdf-v2": at >= DAY && random() < 0.3 ? "on" : "off" }), signals: { bug: 0.05 } });
   assert.equal(check(monitor, harmless, 2 * DAY).state, "ok");
   assert.throws(() => exposureMonitor({ change: { id: "x", at: 0, kind: "deploy", what: "x" }, signal: "bug" }), /no scope/);
 });

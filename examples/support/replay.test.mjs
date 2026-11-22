@@ -1,9 +1,10 @@
 // A golden test: replaying both synthetic inboxes raises exactly the alerts on record
 // (./data/<set>/expected-alerts.json), monitor for monitor and hour for hour. The record was made
 // by the prototype this package grew from, so any change to counting, baselines or episodes that
-// moves an alert shows up here. One change has moved alerts since: baselines in whole stretches
-// (2026-11-22) moved 3-day digest alerts by 1 to 11 hours, each still behind the same planted
-// item, and added one on the holdout behind the iOS photo crash.
+// moves an alert shows up here. One change has moved alerts since: baselines counted in whole
+// stretches of time the store holds events for (2026-11-22) moved 3-day digest alerts by 1 to 11
+// hours, each still behind the same planted item, added one on the holdout behind the iOS photo
+// crash, and dropped one behind the webinar email.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
