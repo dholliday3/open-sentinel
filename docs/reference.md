@@ -78,7 +78,10 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
 - An event the labeler can't answer is not stored and comes back in `failed`. The rest of the
   batch goes through. Send it again to try again.
 - `run(source)` sends a batch when it holds 50 events or its first event has waited 5 seconds,
-  so a quiet stream is still labeled promptly.
+  so a quiet stream is still labeled promptly. It returns when the source ends. For a queue
+  that never does, pass `onBatch`: it is called after each batch is stored, with the batch's
+  events, how many were labeled and which `failed`, so a worker can ack and retry. `run` then
+  keeps no failures of its own, and stops if `onBatch` throws.
 - `keepText: false` drops each event's text and context once it is labeled. Nothing can then be
   relabeled or backtested.
 

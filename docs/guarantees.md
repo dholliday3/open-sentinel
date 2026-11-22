@@ -7,7 +7,7 @@ what open-sentinel does when a part fails, and the rules the design holds to.
 
 | What happens | What open-sentinel does |
 |---|---|
-| The labeler can't answer one event | The event is not stored and is listed in `failed`. The rest of the batch is stored. |
+| The labeler can't answer one event | The event is not stored and is listed in `failed`, and in that batch's `onBatch` for a source that never ends. The rest of the batch is stored. |
 | The store is down | `ingest` and `tick` throw. Send the batch again and call `tick` again: nothing is lost and nothing is stored twice. If the store fails right after a notice went out, that notice is sent again, with the same `id`. |
 | A sink throws | The others still get theirs. The failed one is offered the same items again, with anything newer, on the next batch or tick. `undelivered` says which sink and why. |
 | The process restarts | Open episodes, events already alerted on and undelivered notices are in the store (`saveState`). A cron job that starts fresh for every tick works. |

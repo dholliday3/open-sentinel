@@ -328,3 +328,37 @@ test("a one-event notice quotes the event as stored, after redaction", async () 
   await createWatch({ schema, store, monitors: [eventMonitor({ signal: "bug" })], sinks: [sink] }).tick(10 * HOUR);
   assert.deepEqual(notices.map((n) => [n.alert.event.id, n.question, n.examples]), [["leak", "Broken?", [{ id: "leak", at: 10 * HOUR - 60_000, text: "broken: I can see card [card]from another shop" }]]]);
 });
+
+test("onBatch shows a worker each batch and what failed in it, for a source that never ends", async () => {
+  const rules = counting();
+  const labeler = { ...rules, label: async (state, questions) => (/unreadable/.test(state.message) ? Promise.reject(new Error("no probability")) : rules.label(state, questions)) };
+  const pipeline = createPipeline({ schema, labeler, store: memoryStore() });
+  let stop = false;
+  let released = false;
+  async function* queue() {
+    try {
+      for (let i = 0; !stop; i += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        yield text(`q${i}`, i % 4 === 3 ? "unreadable" : "broken", i);
+      }
+    } finally {
+      released = true;
+    }
+  }
+  const batches = [];
+  // The worker acks what was stored and stops after three batches.
+  const total = await pipeline.run(queue(), { batch: 4, onBatch: async (seen) => {
+    batches.push({ ids: seen.events.map((event) => event.id), labeled: seen.labeled, failed: seen.failed.map((failure) => failure.id) });
+    stop = batches.length === 3;
+  } });
+  assert.deepEqual(batches.map((b) => [b.ids.length, b.labeled, b.failed]), [[4, 3, ["q3"]], [4, 3, ["q7"]], [4, 3, ["q11"]]]);
+  // The counts add up; the failures went to onBatch and aren't kept as well.
+  assert.deepEqual([total.labeled, total.failed], [9, []]);
+  assert.equal(released, true);
+
+  // A worker that can't ack stops the run, and the source is told.
+  stop = false;
+  released = false;
+  await assert.rejects(pipeline.run(queue(), { batch: 2, onBatch: () => Promise.reject(new Error("the queue is gone")) }), /the queue is gone/);
+  assert.equal(released, true);
+});

@@ -156,13 +156,33 @@ export interface Ingested {
   undelivered: Undelivered[];
 }
 
+/** One batch `run` sent: its events as the source gave them, and what came of them. */
+export interface Batch extends Ingested {
+  events: readonly TextEvent[];
+}
+
+export interface RunOptions {
+  /** Send a batch once it holds this many events (50). */
+  batch?: number;
+  /** Or once its first event has waited this long (5 seconds). */
+  maxWaitMs?: number;
+  /**
+   * Called after each batch is stored, with its events and what came of them: where a queue
+   * worker acks what was stored and sees what failed. With it, `run`'s total keeps the counts but
+   * not the failures, so a source that never ends doesn't fill memory. If it throws, `run` stops
+   * and rejects.
+   */
+  onBatch?: (batch: Batch) => void | Promise<void>;
+}
+
 export interface Pipeline {
   ingest(events: readonly TextEvent[]): Promise<Ingested>;
   /**
    * Labels everything a source yields, in batches. A batch is sent when it holds `batch` events
    * or when its first event has waited `maxWaitMs`, so a quiet stream is still labeled promptly.
+   * Returns once the source ends; for one that doesn't, pass `onBatch`.
    */
-  run(source: Source, options?: { batch?: number; maxWaitMs?: number }): Promise<Ingested>;
+  run(source: Source, options?: RunOptions): Promise<Ingested>;
 }
 
 export const createPipeline = ({ schema, labeler, store, sinks = [], concurrency = 8, keepText = true, maxPending = 10_000, ...options }: PipelineOptions): Pipeline => {
@@ -183,20 +203,24 @@ export const createPipeline = ({ schema, labeler, store, sinks = [], concurrency
   };
   return {
     ingest,
-    run: async (source, { batch = 50, maxWaitMs = 5000 } = {}) => {
+    run: async (source, { batch = 50, maxWaitMs = 5000, onBatch } = {}) => {
       const total: Ingested = { labeled: 0, skipped: 0, failed: [], cost: 0, undelivered: [] };
       const iterator = Symbol.asyncIterator in source ? source[Symbol.asyncIterator]() : source[Symbol.iterator]();
       let pending: TextEvent[] = [];
       let sendBy = Infinity;
       const flush = async (): Promise<void> => {
-        const done = await ingest(pending);
+        const events = pending;
+        const done = await ingest(events);
         pending = [];
         sendBy = Infinity;
         total.labeled += done.labeled;
         total.skipped += done.skipped;
-        total.failed.push(...done.failed);
+        if (!onBatch) {
+          total.failed.push(...done.failed);
+        }
         total.cost += done.cost;
         total.undelivered = done.undelivered;
+        await onBatch?.({ ...done, events });
       };
       let next: Promise<IteratorResult<TextEvent>> | undefined;
       let ended = false;
