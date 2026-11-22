@@ -20,8 +20,9 @@ message.
 - **Catch the bugs your error tracking can't see.** Ask plain-English questions about every message,
   like "Does the customer say something isn't working?", and watch the answers the way you watch
   error rates.
-- **Know what caused it.** Each alert ranks the deploys and changes most likely behind it. With six
-  unrelated deploys a day, the right release came first in 40 of 40 trials.
+- **Know what caused it.** Each alert ranks the deploys and changes most likely behind it. When
+  messages carry the app version, the right release came first in 40 of 40 trials, among six
+  unrelated deploys a day.
 - **Alerts you can trust.** Say how many false alerts a week you'll accept and it sets every
   threshold for you. In replay: 0.027 false pages a week, against a budget of 0.25.
 - **One message can be enough.** A data leak or an account takeover pages on the first report.
@@ -452,7 +453,8 @@ Two synthetic three-week support inboxes (4,820 and 4,990 messages), replayed wi
 | Time to page on a slow bug (about one message an hour) | 23 hours |
 | Slow shifts reaching the daily digest | 3 to 6 days |
 | False pages in incident-free weeks | 0.027 a week, against a budget of 0.25 |
-| Right release ranked first, six other deploys a day | 40 of 40 |
+| Right release ranked first, messages tagged with the version, six other deploys a day | 40 of 40 |
+| Right deploy ranked first, no version on the messages (timing only) | 14 of 40, never marked confident |
 | Planned marketing emails | muted, as declared |
 
 ## Good to know
@@ -461,7 +463,10 @@ Two synthetic three-week support inboxes (4,820 and 4,990 messages), replayed wi
   customers do.
 - **Built for tens of thousands of messages a week, not millions.** Each tick rereads its lookback (17
   days by default), and the file store holds it in memory.
-- **Run one watch per store.** Two processes ticking the same watch both alert.
+- **Attribution needs tags.** Helpdesks and SMS don't send the app version or flag state, so look them
+  up when you ingest a message. Without them, suspects are ranked by timing alone.
+- **Run one watch per store.** Two ticks in the same step share alert ids, so sinks can dedupe, but
+  two processes ticking at once can still both save state.
 - **A storm or a news story moves many customers at once.** That is a real shift, and it alerts.
 
 More in [docs/limits.md](docs/limits.md) and [docs/guarantees.md](docs/guarantees.md).
