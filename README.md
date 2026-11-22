@@ -192,7 +192,12 @@ Have a person check a sample, then let the answers set each threshold.
 ```ts
 const events = await store.events({ schema: support.id });
 const checked = auditSample(events, { signal: "data_exposure" })
-  .map(({ event, weight }) => ({ id: event.id, signal: "data_exposure", truth: reviewed(event), weight }));
+  .map(({ event, weight }) => ({
+    id: event.id,
+    signal: "data_exposure",
+    truth: reviewed(event),
+    weight,
+  }));
 const { gates } = fitGates(events, checked, { objective: { precision: 0.9 } });
 ```
 

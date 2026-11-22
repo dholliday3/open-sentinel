@@ -84,7 +84,12 @@ export const tryQuestion = async (store: Store, labeler: Labeler): Promise<void>
 export const checkLabeler = async (store: Store): Promise<void> => {
   const events = await store.events({ schema: support.id });
   const checked = auditSample(events, { signal: "data_exposure" })
-    .map(({ event, weight }) => ({ id: event.id, signal: "data_exposure", truth: reviewed(event), weight }));
+    .map(({ event, weight }) => ({
+      id: event.id,
+      signal: "data_exposure",
+      truth: reviewed(event),
+      weight,
+    }));
   const { gates } = fitGates(events, checked, { objective: { precision: 0.9 } });
   createWatch({ schema: support, store, gates, monitors: [eventMonitor({ signal: "data_exposure" })] });
 };
