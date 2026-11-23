@@ -105,7 +105,10 @@ export const memoryReader = (events: readonly LabeledEvent[]): Reader => {
   const sorted = events.map((event, rank) => ({ event, rank })).sort(byTimeThenRank);
   return {
     count: batched(async (query) => tally(sorted, (ranked) => ranked.event, query)),
-    events: async (query) => pick(sorted.slice(firstAtOrAfter(sorted, query.from, atOf), firstAtOrAfter(sorted, query.to, atOf)), query),
+    events: async (query) => {
+      const from = firstAtOrAfter(sorted, query.from, atOf);
+      return pick({ length: Math.max(0, firstAtOrAfter(sorted, query.to, atOf) - from), at: (index) => sorted[from + index]! }, query);
+    },
     firstAt: async () => sorted[0]?.event.at,
   };
 };

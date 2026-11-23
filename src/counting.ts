@@ -309,11 +309,19 @@ export const filterOf = ({ where, atLeast }: Pick<EventQuery, "where" | "atLeast
   return (event) => (!tagged || tagged(event)) && (!atLeast || atLeast.some((entry) => Object.entries(entry).every(([key, gate]) => (event.signals[key] ?? 0) >= gate)));
 };
 
+/** Answers sorted oldest first, read one at a time: a store can hand over a stretch of what it keeps without copying it. */
+export interface Run {
+  length: number;
+  at(index: number): Ranked;
+}
+
+export const runOf = (sorted: readonly Ranked[]): Run => ({ length: sorted.length, at: (index) => sorted[index]! });
+
 /**
  * Applies `where`, `atLeast`, `order`, `onePerUnit` and `limit` to answers already chosen and
  * sorted oldest first. Stops early when the order allows.
  */
-export const pick = (sorted: readonly Ranked[], query: Pick<EventQuery, "where" | "atLeast" | "order" | "onePerUnit" | "limit">): LabeledEvent[] => {
+export const pick = (sorted: Run, query: Pick<EventQuery, "where" | "atLeast" | "order" | "onePerUnit" | "limit">): LabeledEvent[] => {
   const passes = filterOf(query);
   const limit = query.limit ?? Infinity;
   const order = query.order ?? "oldest";
@@ -332,8 +340,15 @@ export const pick = (sorted: readonly Ranked[], query: Pick<EventQuery, "where" 
   const out: LabeledEvent[] = [];
   if (typeof order === "object") {
     const sureness = surenessOf(order.surest);
-    const ranked = sorted.filter(({ event }) => passes(event)).sort((a, b) => sureness(b.event) - sureness(a.event) || b.event.at - a.event.at || a.rank - b.rank);
-    for (const { event } of ranked) {
+    const passing: Ranked[] = [];
+    for (let n = 0; n < sorted.length; n += 1) {
+      const ranked = sorted.at(n);
+      if (passes(ranked.event)) {
+        passing.push(ranked);
+      }
+    }
+    passing.sort((a, b) => sureness(b.event) - sureness(a.event) || b.event.at - a.event.at || a.rank - b.rank);
+    for (const { event } of passing) {
       if (out.length >= limit) {
         break;
       }
@@ -345,7 +360,7 @@ export const pick = (sorted: readonly Ranked[], query: Pick<EventQuery, "where" 
   }
   const newest = order === "newest";
   for (let n = 0; n < sorted.length && out.length < limit; n += 1) {
-    const { event } = sorted[newest ? sorted.length - 1 - n : n]!;
+    const { event } = sorted.at(newest ? sorted.length - 1 - n : n);
     if (passes(event) && first(event)) {
       out.push(event);
     }
@@ -354,7 +369,7 @@ export const pick = (sorted: readonly Ranked[], query: Pick<EventQuery, "where" 
 };
 
 /** The reference for `Store.events`, over every stored event in the order they were stored. */
-export const readEvents = (stored: readonly LabeledEvent[], query: EventQuery = {}): LabeledEvent[] => pick(answersOf(stored, query), query);
+export const readEvents = (stored: readonly LabeledEvent[], query: EventQuery = {}): LabeledEvent[] => pick(runOf(answersOf(stored, query)), query);
 
 /** The reference for `Store.labelers`. */
 export const labelersOf = (stored: readonly LabeledEvent[], { schema, from, to, where }: LabelerQuery): Labelers => {

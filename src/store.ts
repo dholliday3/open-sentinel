@@ -1,8 +1,8 @@
 // Where labeled events, changes and the alerting loop's own state are kept. Implement `Store` to
 // keep them in your own database; `memoryStore` is the reference and what tests use. A store
 // counts where the data lives (`count`), so the watch never reads its lookback into memory.
-import { firstAtOrAfter, keepOne, pick, tally } from "./counting.ts";
-import type { CountQuery, CountRow, EventQuery, LabelerQuery, Labelers, OneAnswer, Ranked } from "./counting.ts";
+import { firstAtOrAfter, keepOne, pick, runOf, tally } from "./counting.ts";
+import type { CountQuery, CountRow, EventQuery, LabelerQuery, Labelers, OneAnswer, Ranked, Run } from "./counting.ts";
 import { hasTags } from "./metrics.ts";
 import type { Change, Json, LabeledEvent } from "./types.ts";
 
@@ -156,13 +156,21 @@ export const memoryStore = (seed: { events?: readonly LabeledEvent[]; changes?: 
     }
     return decided.answers;
   };
-  /** The answers a query sees, oldest first, as a sorted list and the stretch of it in range. */
-  const answers = (query: EventQuery): Ranked[] => {
+  /** The answers a query sees, oldest first: one labeler's straight from where they are kept, without a copy. */
+  const answers = (query: EventQuery): Run => {
     if (query.labeler === undefined && query.oneAnswer !== undefined) {
       const all = oneAnswerOf(query.schema, query.oneAnswer);
-      return all.slice(firstAtOrAfter(all, query.from ?? -Infinity, atOfRanked), firstAtOrAfter(all, query.to ?? Infinity, atOfRanked));
+      const from = firstAtOrAfter(all, query.from ?? -Infinity, atOfRanked);
+      return { length: Math.max(0, firstAtOrAfter(all, query.to ?? Infinity, atOfRanked) - from), at: (index) => all[from + index]! };
     }
-    return merged(columnsFor(query.schema, query.labeler), query);
+    const mine = columnsFor(query.schema, query.labeler);
+    if (mine.length !== 1) {
+      return runOf(merged(mine, query));
+    }
+    const column = mine[0]!;
+    const from = firstAtOrAfter(column.events, query.from ?? -Infinity, (e) => e.at);
+    const length = Math.max(0, firstAtOrAfter(column.events, query.to ?? Infinity, (e) => e.at) - from);
+    return { length, at: (index) => ({ event: column.events[from + index]!, rank: column.ranks[from + index]! }) };
   };
 
   add(seed.events ?? []);

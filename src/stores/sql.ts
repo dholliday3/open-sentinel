@@ -47,6 +47,8 @@ export interface Dialect {
   ddl(tables: Tables): string[];
   /** The most parameters one statement may take. */
   maxParams: number;
+  /** Ends a subquery so it is worked out on its own, not merged into the query around it: Postgres's `OFFSET 0`. */
+  fence: string;
 }
 
 export interface SqlStoreOptions {
@@ -99,6 +101,39 @@ const bound = (value: number): number => (value === Infinity ? Number.MAX_VALUE 
 /** Keys sorted, so tags stored as text compare equal when they are equal. */
 const sortedTags = (tags: Tags): Tags => Object.fromEntries(Object.entries(tags).sort(([a], [b]) => (a < b ? -1 : 1)));
 
+/** Nothing counted in any window. */
+const countedNothing = (query: CountQuery): CountRow[] => (query.groupBy ? [] : query.windows.map((_, window) => ({ window, total: 0, yes: Object.fromEntries(query.signals.map((signal) => [signal, 0])), events: 0 })));
+
+/**
+ * The windows with anything in them, by length and then time, as runs of back-to-back windows
+ * of one whole-millisecond length (one window alone is a run of one), and for each window's
+ * place in that order, the windows given there.
+ */
+const runsOf = (windows: CountQuery["windows"]): { runs: Array<{ o: number; s: number; l: number; n: number; e: number }>; places: number[][] } => {
+  const distinct = new Map<string, { from: number; to: number; given: number[] }>();
+  windows.forEach((window, i) => {
+    if (window.from < window.to) {
+      const key = `${window.from}\n${window.to}`;
+      const found = distinct.get(key) ?? { from: window.from, to: window.to, given: [] };
+      found.given.push(i);
+      distinct.set(key, found);
+    }
+  });
+  const sorted = [...distinct.values()].sort((a, b) => a.to - a.from - (b.to - b.from) || a.from - b.from);
+  const runs: Array<{ o: number; s: number; l: number; n: number; e: number }> = [];
+  sorted.forEach((window, place) => {
+    const length = window.to - window.from;
+    const last = runs.at(-1);
+    if (last && last.e === window.from && last.l === length && Number.isSafeInteger(window.from) && Number.isSafeInteger(length)) {
+      last.n += 1;
+      last.e = window.to;
+    } else {
+      runs.push({ o: place, s: bound(window.from), l: bound(length), n: 1, e: bound(window.to) });
+    }
+  });
+  return { runs, places: sorted.map((window) => window.given) };
+};
+
 const EVENT_COLUMNS = { i: "integer", schema_id: "text", id: "text", labeler: "text", at: "double", unit: "text", tags: "json", signals: "json", probability: "text", text: "text", context: "json" } as const;
 
 export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParams = dialect.maxParams }: SqlStoreOptions): SqlStore => {
@@ -132,8 +167,8 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
 
   const countOnce = async (query: CountQuery): Promise<CountRow[]> => {
     const params = paramsOf(dialect);
-    const windows = dialect.rows(params.add(JSON.stringify(query.windows.map((w, i) => ({ i, lo: bound(w.from), hi: bound(w.to) })))), "w", { i: "integer", lo: "double", hi: "double" });
-    // Each part of each signal once, as a column of 1s and 0s; a signal is the product of its parts.
+    // Each part of each signal worked out once, as one bit of a mask (60 to a column, so a row
+    // stays narrow to sort); a signal is yes when all its parts' bits are.
     const parts = new Map<string, number>();
     const partsOf = (signal: string): number[] =>
       signal.split("&").map((key) => {
@@ -145,18 +180,32 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
         return parts.get(id)!;
       });
     const signals = query.signals.map((signal) => (signal === "*" ? [] : partsOf(signal)));
-    const partColumns = [...parts.keys()].map((id, n) => {
+    const masks: string[][] = [];
+    [...parts.keys()].forEach((id, n) => {
       const [gate, ...key] = id.split("\n");
-      return `${atGate(params, key.join("\n"), Number(gate))} AS p${n}`;
+      (masks[Math.floor(n / 60)] ??= []).push(`${atGate(params, key.join("\n"), Number(gate))} * ${2 ** (n % 60)}`);
     });
+    const partColumns = masks.map((bits, m) => `CAST(${bits.join(" + ")} AS BIGINT) AS m${m}`);
+    const bit = (n: number): string => `((m${Math.floor(n / 60)} >> ${n % 60}) & 1)`;
     const groupBy = query.groupBy;
     const groupColumns = !groupBy ? [] : "tags" in groupBy ? groupBy.tags.map((key, n) => `${dialect.text("e.tags", params.key(key))} AS g${n}`) : [`${dialect.without("e.tags", groupBy.tagsExcept, params.add)} AS g0`];
     const groups = groupColumns.map((_, n) => `g${n}`);
     const conditions = [...answers(params, query), ...(query.where ? tagged(params, query.where) : []), ...(query.exclude ? [`${matches(params, query.exclude)} = 0`] : [])];
-    const scanned = [`w.i AS win`, "e.at AS at", "e.seq AS seq", "e.unit AS unit", ...groupColumns, ...partColumns].join(", ");
-    const product = (ids: number[]): string => (ids.length === 0 ? "1" : ids.map((id) => `p${id}`).join(" * "));
+    // Each event in reach is read once and its signal parts worked out once, then placed in every
+    // window that holds it. Back-to-back windows of one length (a baseline's stretches, an onset's
+    // hours) are a run, and an event finds its window in a run by arithmetic, not by comparing it
+    // with every window.
+    const { runs, places } = runsOf(query.windows);
+    if (runs.length === 0) {
+      return countedNothing(query);
+    }
+    conditions.push(`e.at >= ${params.number(Math.min(...runs.map((run) => run.s)))}`, `e.at < ${params.number(Math.max(...runs.map((run) => run.e)))}`);
+    const scan = `SELECT ${["e.at AS at", "e.seq AS seq", "e.unit AS unit", ...groupColumns, ...partColumns].join(", ")} FROM ${events} e WHERE ${conditions.join(" AND ")}${dialect.fence}`;
+    const table = dialect.rows(params.add(JSON.stringify(runs)), "ru", { o: "integer", s: "double", l: "double", n: "integer", e: "double" });
+    const placed = `SELECT ru.o + CASE WHEN ru.n = 1 THEN 0 ELSE CAST(FLOOR((x.at - ru.s) / ru.l) AS INTEGER) END AS win, x.* FROM ${table} JOIN (${scan}) x ON x.at >= ru.s AND x.at < ru.e`;
+    const product = (ids: number[]): string => (ids.length === 0 ? "1" : ids.map(bit).join(" * "));
     const keys = ["win", ...groups].join(", ");
-    const r = `r AS (SELECT ${scanned} FROM ${windows} JOIN ${events} e ON e.at >= w.lo AND e.at < w.hi WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")})`;
+    const r = `r AS (${placed})`;
     const sql =
       query.per === "event"
         ? `WITH ${r} SELECT ${keys}, COUNT(*) AS total, COUNT(*) AS n, MIN(at) AS first${signals.map((ids, s) => `, SUM(${product(ids)}) AS y${s}`).join("")} FROM r GROUP BY ${keys}`
@@ -167,10 +216,10 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
       const [a, b] = await Promise.all([countOnce({ ...query, signals: query.signals.slice(0, half) }), countOnce({ ...query, signals: query.signals.slice(half) })]);
       return a.map((row, n) => ({ ...row, yes: { ...row.yes, ...b[n]!.yes } }));
     }
-    const rows = (await run(sql, params)).map((row) => {
+    const rows = (await run(sql, params)).flatMap((row) => {
       const yes = Object.fromEntries(query.signals.map((signal, s) => [signal, Number(row[`y${s}`] ?? 0)]));
       const group: Tags | undefined = !groupBy ? undefined : "tags" in groupBy ? Object.fromEntries(groupBy.tags.map((key, n) => [key, (row[`g${n}`] as string | null) ?? null])) : (dialect.parse(row.g0) as Tags);
-      return { window: Number(row.win), first: Number(row.first), ...(group ? { group } : {}), total: Number(row.total), yes, events: Number(row.n) };
+      return places[Number(row.win)]!.map((window) => ({ window, first: Number(row.first), ...(group ? { group } : {}), total: Number(row.total), yes, events: Number(row.n) }));
     });
     if (!groupBy) {
       const byWindow = new Map(rows.map((row) => [row.window, row]));

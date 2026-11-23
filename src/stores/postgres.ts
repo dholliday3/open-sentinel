@@ -31,6 +31,8 @@ export const postgresDialect: Dialect = {
     `CREATE TABLE IF NOT EXISTS ${state} (key TEXT PRIMARY KEY, value JSONB NOT NULL)`,
   ],
   maxParams: 65_535,
+  // Keeps the signal parts in the scan, where workers share them, so only narrow rows are sorted.
+  fence: " OFFSET 0",
 };
 
 /** A store in Postgres 12 or later. Run `migrate()` once, or put `postgresSchema()` in your own migrations. */
