@@ -20,6 +20,10 @@
     "./postgres": {
       "types": "./dist/src/stores/postgres.d.ts",
       "default": "./dist/src/stores/postgres.js"
+    },
+    "./sqlite": {
+      "types": "./dist/src/stores/sqlite.d.ts",
+      "default": "./dist/src/stores/sqlite.js"
     }
   },
   "bin": {

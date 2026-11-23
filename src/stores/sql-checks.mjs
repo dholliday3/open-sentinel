@@ -8,8 +8,8 @@ import { withPlans } from "../../examples/support/replay.ts";
 import { loadInbox } from "../../examples/support/data.ts";
 import { supportMonitors } from "../../examples/support/monitors.ts";
 import { support } from "../../examples/support/schema.ts";
-import { createWatch, DAY, exposureMonitor, HOUR, memoryStore, silenceMonitor } from "../index.ts";
-import { storeContract } from "../testing.ts";
+import { countEvents, createWatch, DAY, exposureMonitor, HOUR, memoryStore, silenceMonitor } from "../index.ts";
+import { seeded, storeContract } from "../testing.ts";
 
 /** `make(table)` gives a migrated store on tables of that name; each call a new name. */
 export const checkSqlStore = (name, make, { skip = false } = {}) => {
@@ -32,6 +32,19 @@ export const checkSqlStore = (name, make, { skip = false } = {}) => {
     await store.saveState(hostile, { [hostile]: hostile });
     assert.deepEqual(await store.loadState(hostile), { [hostile]: hostile });
     assert.equal(await store.delete({ unit: hostile }), 1);
+  });
+
+  test(`${name}: seventy signals in one count, past what one integer of bits holds, count as countEvents does`, { skip }, async () => {
+    const store = await fresh();
+    const keys = Array.from({ length: 70 }, (_, i) => `k${i}`);
+    const random = seeded(70);
+    const events = Array.from({ length: 300 }, (_, i) => ({ id: `e${i}`, at: Math.floor(random() * 1000), ...(random() < 0.8 ? { unit: `u${i % 37}` } : {}), schema: "s@1", labeler: "l@1", probability: "native", signals: Object.fromEntries(keys.filter(() => random() < 0.8).map((key) => [key, random()])) }));
+    await store.append(events);
+    const signals = [...keys, "k1&k62", "k59&k60&k69", "*"];
+    for (const per of ["unit", "event"]) {
+      const query = { schema: "s@1", labeler: "l@1", windows: [{ from: 0, to: 500 }, { from: 250, to: 1000 }, { from: 0, to: 1000 }], signals, gates: { k3: 0.9, k61: 0.1 }, per };
+      assert.deepEqual(await store.count(query), countEvents(events, query));
+    }
   });
 
   test(`${name}: a table name that isn't a plain name is refused`, { skip }, async () => {

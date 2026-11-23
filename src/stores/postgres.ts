@@ -22,6 +22,7 @@ export const postgresDialect: Dialect = {
   // Drivers return jsonb parsed already.
   parse: (value) => value ?? null,
   least: (values) => (values.length === 1 ? values[0]! : `LEAST(${values.join(", ")})`),
+  whole: (value) => `CAST(FLOOR(${value}) AS INTEGER)`,
   ddl: ({ events, changes, state, prefix }) => [
     `CREATE TABLE IF NOT EXISTS ${events} (seq BIGINT GENERATED ALWAYS AS IDENTITY, schema_id TEXT NOT NULL, id TEXT NOT NULL, labeler TEXT NOT NULL, at DOUBLE PRECISION NOT NULL, unit TEXT, tags JSONB, signals JSONB NOT NULL, probability TEXT NOT NULL, text TEXT, context JSONB, PRIMARY KEY (schema_id, id, labeler))`,
     `CREATE INDEX IF NOT EXISTS ${prefix}_events_time ON ${events} (schema_id, labeler, at)`,

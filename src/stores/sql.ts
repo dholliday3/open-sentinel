@@ -43,12 +43,17 @@ export interface Dialect {
   parse(value: unknown): unknown;
   /** The smallest of some numbers. */
   least(values: readonly string[]): string;
+  /** A number that is never negative, rounded down to an integer. */
+  whole(value: string): string;
+
   /** The statements that create the tables and indexes, each run on its own. */
   ddl(tables: Tables): string[];
   /** The most parameters one statement may take. */
   maxParams: number;
   /** Ends a subquery so it is worked out on its own, not merged into the query around it: Postgres's `OFFSET 0`. */
   fence: string;
+  /** A last change to a statement before it runs: SQLite drivers that only take `?` get one per use, in order. */
+  finish?(sql: string, params: unknown[]): { sql: string; params: unknown[] };
 }
 
 export interface SqlStoreOptions {
@@ -95,6 +100,9 @@ const paramsOf = (dialect: Dialect) => {
 };
 type Params = ReturnType<typeof paramsOf>;
 
+/** 2 to the n, written exactly: past 2^53 a JavaScript number would print rounded. */
+const bitOf = (n: number): string => (1n << BigInt(n)).toString();
+
 /** A time as a parameter: infinities, which JSON and some drivers can't carry, become the largest finite numbers. */
 const bound = (value: number): number => (value === Infinity ? Number.MAX_VALUE : value === -Infinity ? -Number.MAX_VALUE : value);
 
@@ -139,7 +147,11 @@ const EVENT_COLUMNS = { i: "integer", schema_id: "text", id: "text", labeler: "t
 export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParams = dialect.maxParams }: SqlStoreOptions): SqlStore => {
   const tables = tablesOf(table);
   const { events, changes, state } = tables;
-  const run = async (sql: string, params: Params | unknown[] = []): Promise<ReadonlyArray<Record<string, unknown>>> => (await query(sql, Array.isArray(params) ? params : params.values)).rows;
+  const run = async (sql: string, params: Params | unknown[] = []): Promise<ReadonlyArray<Record<string, unknown>>> => {
+    const values = Array.isArray(params) ? params : params.values;
+    const ready = dialect.finish ? dialect.finish(sql, values) : { sql, params: values };
+    return (await query(ready.sql, ready.params)).rows;
+  };
 
   /** `where` as conditions on the events table `e`. */
   const tagged = (params: Params, where: TagFilter): string[] => Object.entries(where).map(([key, value]) => `${dialect.text("e.tags", params.key(key))} = ${params.text(value)}`);
@@ -180,12 +192,15 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
         return parts.get(id)!;
       });
     const signals = query.signals.map((signal) => (signal === "*" ? [] : partsOf(signal)));
-    const masks: string[][] = [];
-    [...parts.keys()].forEach((id, n) => {
+    const gated = [...parts.keys()].map((id) => {
       const [gate, ...key] = id.split("\n");
-      (masks[Math.floor(n / 60)] ??= []).push(`${atGate(params, key.join("\n"), Number(gate))} * ${2 ** (n % 60)}`);
+      return { key: key.join("\n"), gate: Number(gate) };
     });
-    const partColumns = masks.map((bits, m) => `CAST(${bits.join(" + ")} AS BIGINT) AS m${m}`);
+    const partColumns: string[] = [];
+    for (let m = 0; m * 60 < gated.length; m += 1) {
+      const chunk = gated.slice(m * 60, m * 60 + 60);
+      partColumns.push(`CAST(${chunk.map(({ key, gate }, n) => `${atGate(params, key, gate)} * ${bitOf(n)}`).join(" + ")} AS BIGINT) AS m${m}`);
+    }
     const bit = (n: number): string => `((m${Math.floor(n / 60)} >> ${n % 60}) & 1)`;
     const groupBy = query.groupBy;
     const groupColumns = !groupBy ? [] : "tags" in groupBy ? groupBy.tags.map((key, n) => `${dialect.text("e.tags", params.key(key))} AS g${n}`) : [`${dialect.without("e.tags", groupBy.tagsExcept, params.add)} AS g0`];
@@ -202,7 +217,7 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
     conditions.push(`e.at >= ${params.number(Math.min(...runs.map((run) => run.s)))}`, `e.at < ${params.number(Math.max(...runs.map((run) => run.e)))}`);
     const scan = `SELECT ${["e.at AS at", "e.seq AS seq", "e.unit AS unit", ...groupColumns, ...partColumns].join(", ")} FROM ${events} e WHERE ${conditions.join(" AND ")}${dialect.fence}`;
     const table = dialect.rows(params.add(JSON.stringify(runs)), "ru", { o: "integer", s: "double", l: "double", n: "integer", e: "double" });
-    const placed = `SELECT ru.o + CASE WHEN ru.n = 1 THEN 0 ELSE CAST(FLOOR((x.at - ru.s) / ru.l) AS INTEGER) END AS win, x.* FROM ${table} JOIN (${scan}) x ON x.at >= ru.s AND x.at < ru.e`;
+    const placed = `SELECT ru.o + CASE WHEN ru.n = 1 THEN 0 ELSE ${dialect.whole("(x.at - ru.s) / ru.l")} END AS win, x.* FROM ${table} JOIN (${scan}) x ON x.at >= ru.s AND x.at < ru.e`;
     const product = (ids: number[]): string => (ids.length === 0 ? "1" : ids.map(bit).join(" * "));
     const keys = ["win", ...groups].join(", ");
     const r = `r AS (${placed})`;
