@@ -10,16 +10,18 @@ type-checked counterpart in [`examples/readme.ts`](../examples/readme.ts).
 |---|---|---|---|
 | Schema | The questions, versioned by their wording | `yesNo`, `choice`, `score`, `defineSchema`, `both` | `src/schema.ts` |
 | Labeler | Answers the questions about one event | `decisionLabeler`, `chatLabeler`, `ruleLabeler`, `cached` | `src/labeler.ts`, `src/labelers/` |
-| Store | Keeps labeled events, the change log and the watch's state | `memoryStore`, `jsonlStore` | `src/store.ts`, `src/stores/` |
+| Store | Keeps labeled events, the change log and the watch's state, and counts them | `memoryStore`, `jsonlStore`, `postgresStore`, `sqliteStore`, `duckdbStore` | `src/store.ts`, `src/stores/` |
+| Reader | What monitors read through: counts, and a few events at a time | `storeReader`, `memoryReader` | `src/reader.ts` |
 | Monitor | One question asked of the recent past on a schedule | `shareMonitor(s)`, `eventMonitor`, `exposureMonitor`, `volumeMonitor`, `silenceMonitor` | `src/monitor.ts`, `src/monitors.ts` |
 | Change | Something that shipped: a deploy, a flag, a release, an email | `exposureOf`, `rankChanges`, `suspectsFor` | `src/changes.ts` |
 | Sink | Where labeled events and alerts go | `consoleSink`, `jsonlSink`, `webhookSink`, `otlpSink` | `src/sinks.ts`, `src/sinks/` |
 | Tool | What an investigator can ask of the data | `toolsFor`, `investigate`, `mcpServer` | `src/tools.ts`, `src/investigate.ts`, `src/mcp.ts` |
 
 Two loops wire them together, each short enough to replace with your own (`src/pipeline.ts`):
-`createPipeline` for events in, `createWatch` for alerts out. Three more modules work on stored
+`createPipeline` for events in, `createWatch` for alerts out. Four more modules work on stored
 events and have no interface to implement: `src/quality.ts` (is the labeler right?),
-`src/backtest.ts` (try it on the past first) and `src/metrics.ts` (counting).
+`src/backtest.ts` (try it on the past first), `src/metrics.ts` (counting in memory) and
+`src/counting.ts` (the queries a store answers, and how to answer them over an array).
 
 ## A labeled event
 
@@ -85,6 +87,108 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
 - `keepText: false` drops each event's text and context once it is labeled. Nothing can then be
   relabeled or backtested.
 
+## Stores
+
+A store keeps events and counts them where they are kept. A watch tick never reads its lookback:
+it sends the store a few counts and reads back only the events it alerts on and the few a notice
+quotes: a few hundred rows a tick, at 50k messages a week or at 2M
+([evaluation](evaluation.md#scale)).
+
+| Store | Import from | Use it for |
+|---|---|---|
+| `memoryStore` | `open-sentinel` | Tests and replays |
+| `jsonlStore` | `open-sentinel` | Development: files in one folder, everything held in one process's memory, one writer |
+| `postgresStore` | `open-sentinel/postgres` | Production: Postgres 12 or later, Neon, Vercel Postgres, Supabase |
+| `sqliteStore` | `open-sentinel/sqlite` | One machine or the edge: `node:sqlite`, better-sqlite3, libSQL/Turso, Cloudflare D1 |
+| `duckdbStore` | `open-sentinel/duckdb` | Heavy volume and long history, on one machine. One process writes a DuckDB file at a time |
+
+The database stores take a `query(sql, params)` function instead of a driver, so the package
+keeps no dependencies. `pg`'s `pool.query` fits as it is:
+
+```ts
+import pg from "pg";
+import { postgresStore } from "open-sentinel/postgres";
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const store = postgresStore({ query: (sql, params) => pool.query(sql, params) });
+await store.migrate();
+```
+
+SQLite through `node:sqlite`, and through Cloudflare D1 (which takes at most 100 parameters a
+statement):
+
+```ts
+import { DatabaseSync } from "node:sqlite";
+import { sqliteStore } from "open-sentinel/sqlite";
+
+const db = new DatabaseSync("signals.db");
+const local = sqliteStore({ query: async (sql, params) => ({ rows: db.prepare(sql).all(...params) }) });
+
+const edge = sqliteStore({
+  query: async (sql, params) => ({ rows: (await env.DB.prepare(sql).bind(...params).all()).results }),
+  maxParams: 100,
+});
+```
+
+DuckDB through `@duckdb/node-api`:
+
+```ts
+import { DuckDBInstance } from "@duckdb/node-api";
+import { duckdbStore } from "open-sentinel/duckdb";
+
+const connection = await (await DuckDBInstance.create("signals.duckdb")).connect();
+const store = duckdbStore({ query: async (sql, params) => ({ rows: (await connection.runAndReadAll(sql, params)).getRowObjectsJS() }) });
+```
+
+- `migrate()` creates `sentinel_events`, `sentinel_changes` and `sentinel_state` if they don't
+  exist. `table: "app.sentinel"` names them differently. `postgresSchema()`, `sqliteSchema()`
+  and `duckdbSchema()` give the same SQL for a migration tool of your own.
+- Signal keys, tags and their values are always parameters, never SQL text, and a table name must
+  be a plain name.
+- `append` sends 500 events a statement (`batch`). If one statement fails, the ones before it are
+  stored; sending the batch again stores the rest and skips what is there.
+- Times are stored as numbers of milliseconds, exactly as given.
+- Many workspaces in one store: name the tag that splits them when the tables are created,
+  `postgresStore({ query, partition: "workspace" })`, and give each workspace its own watch,
+  `createWatch({ where: { workspace: "acme" }, stateKey: "watch:support:acme" })`. The tag's value
+  is kept in an indexed column, so each watch reads only its workspace's events: at 500k
+  messages a week across 50 workspaces, one workspace's tick took 0.5 s in Postgres, against 1.1 s
+  without `partition`, when every watch reads every workspace's events in its window. Events
+  stored before `partition` was set aren't found by it.
+
+### What a store answers
+
+Three reads, each with a reference implementation over an array in `src/counting.ts`:
+
+- `count({ schema, windows, signals, gates, per, where, exclude, groupBy })`: in many windows at
+  once, each signal's yeses and the total, per customer (`per: "unit"`) or per event, one row per
+  window, or per group of tags (`groupBy: { tags }` or `{ tagsExcept }`) within a window.
+  `countEvents(events, query)` is the reference.
+- `events({ from, to, schema, where, atLeast, order, onePerUnit, limit })`: events in a range,
+  filtered by tags and by signals at or above a cutoff, oldest, newest or surest first, one per
+  customer, at most `limit`. `readEvents(events, query)` is the reference.
+- `labelers({ schema, from, to })`: which labelers answered in a range, and whose answer is the
+  newest. `labelersOf(events, query)` is the reference.
+
+Each read takes `labeler` (only its answers) or `oneAnswer: { prefer, from, to }` (one answer per
+event: `prefer`'s where it answered, else the first stored, deciding over that stretch).
+
+## Readers
+
+Monitors, suspects and the investigator's tools read through a `Reader`: `count` (a store's count
+without the schema and labeler), `events` (a bounded range) and `firstAt` (the first event, before
+which baselines don't reach).
+
+- `storeReader(store, { schema, labeler?, span?, where? })` is what the watch builds each tick, over
+  its lookback. It asks the store once who answered: when one labeler did, every read is that
+  labeler's; when several did, every read takes one answer per event, the newest labeler's where
+  it answered (`latestAnswers`).
+- `memoryReader(events)` counts events in hand, each as it is. `replay` and `backtestMonitors` run
+  on it, and both readers give the same numbers for the same events.
+- Counts the checks of one tick ask for together, differing only in windows and signals, reach the
+  store as one query. In the benchmark, a tick of 125 monitors that raised three alerts sent the
+  store seven counts.
+
 ## Monitors
 
 - `shareMonitor`: is a signal's share higher in this window than in its baseline? Counts
@@ -121,6 +225,11 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
   never alerts and never ends an episode.
 - **Mixed labelers.** The watch counts each event once and reports `mixedLabelers` when its
   window holds answers from more than one labeler. Pass `labeler` to count only one.
+- **One workspace.** `where` scopes a watch to the events carrying some tags, as if the store
+  held nothing else. Give each such watch its own `stateKey`. Each has its own alarm budget, so a
+  hundred workspaces can raise a hundred times the false alerts of one.
+- **What a tick reads.** Counts, through the store. Events only for a one-event monitor (those at
+  its gate), and for a fired notice (its examples, three by default).
 - `groupAlerts` groups pages within 4 hours of each other, and digest items within a day, the
   way on-call tools group alerts into cases.
 
@@ -171,8 +280,9 @@ text only with `includeText`.
 
 ## Investigation
 
-- `toolsFor`: six tools over the data: a signal over time, what moved most, a split by tag, the
-  messages themselves, the change log, and ranked suspects.
+- `toolsFor({ reader, changes })`: six tools over a reader: a signal over time, what moved most,
+  a split by tag, the messages themselves, the change log, and ranked suspects. Over a store,
+  pass `storeReader(store, { schema })`; over events in hand, `memoryReader(events)`.
 - `investigate`: gives a group of alerts and those tools to a chat model and returns a report:
   a verdict (incident, watch, benign, noise or inconclusive), what people report, who is
   affected, when it started, the likely cause, and the next step. A reply without one of the
@@ -206,25 +316,35 @@ const mine: Labeler = {
 `id` is stored on every event: change it when the model changes. Use `probability: "none"` if it
 only gives yes or no.
 
-**A store** is eight methods. `memoryStore` in `src/store.ts` is the reference.
-`storeContract` from `open-sentinel/testing` is what every store must do, as checks for any test
-runner on Node; `make` must give an empty store each time. The built-in stores run it in
-`src/store.test.mjs`.
+**A store** is ten methods. For Postgres, SQLite or DuckDB, use the built-in ones. For another
+database, start from `src/stores/sql.ts`: a `Dialect` holds what differs between databases
+(placeholders, reading a JSON field, a list as one parameter, the tables), and the rest of the SQL
+is shared. Anything else can answer `count`, `events` and `labelers` with the reference functions
+over what it holds, which is right for small data only, since they read it all:
 
 ```ts
+import { countEvents, labelersOf, readEvents } from "open-sentinel";
 import type { Store } from "open-sentinel";
 
-const postgres: Store = {
-  append: async (events) => { /* insert ... on conflict (id, schema, labeler) do nothing */ },
-  events: async ({ from, to, schema, labeler } = {}) => { /* select ... order by at */ },
-  known: async (ids, schema, labeler) => { /* select id ... where id = any($1) */ },
-  delete: async ({ before, unit }) => { /* delete ... returning the count */ },
-  recordChange: async (change) => { /* upsert by id */ },
-  changes: async ({ from, to } = {}) => { /* select ... order by at */ },
-  loadState: async (key) => { /* select value where key = $1 */ },
-  saveState: async (key, value) => { /* upsert by key */ },
+const kv: Store = {
+  append: async (events) => { await stored.push(events); },
+  events: async (query) => readEvents(await stored.all(), query),
+  count: async (query) => countEvents(await stored.all(), query),
+  labelers: async (query) => labelersOf(await stored.all(), query),
+  known: async (ids, schema, labeler) => new Set(ids.filter((id) => stored.has(id, schema, labeler))),
+  delete: async ({ before, unit }) => stored.remove({ before, unit }),
+  recordChange: async (change) => { await stored.putChange(change); },
+  changes: async ({ from, to } = {}) => stored.changesBetween(from, to),
+  loadState: async (key) => stored.get(key),
+  saveState: async (key, value) => { await stored.put(key, value); },
 };
 ```
+
+`stored.all()` must give events in the order they were stored: ties in time keep that order.
+`storeContract` from `open-sentinel/testing` is what every store must do, as checks for any test
+runner on Node; `make` must give an empty store each time. Among them, a store's counts and reads
+must equal the reference functions' on random histories with copies from three labelers, late
+events and awkward keys. The built-in stores run it in `src/store.test.mjs` and `src/stores/`.
 
 ```ts
 import { test } from "node:test";
@@ -263,11 +383,12 @@ const slack: Sink = {
 
 **A monitor** is an object with a `check` that returns `ok`, `firing` or `no_data`. Its `name`
 must be its own: it is what tells one monitor's episodes from another's. `tested: false` means
-it is not a statistical test, so it takes no share of the alarm budget.
+it is not a statistical test, so it takes no share of the alarm budget. A check reads through
+its `reader`: counts, which the store works out, and events in a bounded range.
 
 ```ts
 import type { Monitor } from "open-sentinel";
-import { count, DAY } from "open-sentinel";
+import { countsOf, DAY } from "open-sentinel";
 
 const ceiling = (signal: string, share: number): Monitor => ({
   name: `${signal} above ${share * 100}% today`,
@@ -276,25 +397,38 @@ const ceiling = (signal: string, share: number): Monitor => ({
   windowMs: DAY,
   lookbackMs: DAY,
   tested: false,
-  check: (view, now, { gates }) => {
-    const today = count(view.within({ from: now - DAY, to: now }), signal, gates);
+  check: async (reader, now, { gates }) => {
+    const [row] = await reader.count({ windows: [{ from: now - DAY, to: now }], signals: [signal], gates, per: "event" });
+    const today = countsOf(row, signal);
     return { state: today.total === 0 ? "no_data" : today.yes / today.total > share ? "firing" : "ok", detail: { ...today } };
   },
 });
 ```
 
-A `check` may be asynchronous and ignore the view. That is how a monitor asks a database for
-counts when the stream is too large to read into memory on every tick:
+A check may ignore the reader and ask a database of its own:
 
 ```ts
 const ceilingInSql = (signal: string, share: number): Monitor => ({
   ...ceiling(signal, share),
-  check: async (_view, now) => {
+  check: async (_reader, now) => {
     const today = await sql.count("select count(*) filter (where signals ->> $1 >= '0.5') as yes, count(*) as total from events where at >= $2 and at < $3", [signal, now - DAY, now]);
     return { state: today.total === 0 ? "no_data" : today.yes / today.total > share ? "firing" : "ok", detail: { ...today } };
   },
 });
 ```
+
+**A monitor written for a view**, before monitors read through a reader, changes like this:
+
+| Before | Now |
+|---|---|
+| `check(view, now, context)` | `check(reader, now, context)`, and it returns a promise |
+| `count(view.within({ from, to, where }), signal, gates)` | `countsOf((await reader.count({ windows: [{ from, to }], signals: [signal], gates, per: "event", where }))[0], signal)`; `per: "unit"` for `countUnits` |
+| `view.within({ from, to })` | `await reader.events({ from, to })`, with `atLeast` and `limit` to read only what you need. `viewWithin(reader, range)` gives a view of a short range |
+| `view.events[0]?.at` | `await reader.firstAt()` |
+
+`estimateOnset`, `exposureOf`, `rankChanges`, `suspectsFor`, `series`, `breakdown`, `movers` and
+`summarize` take a reader too and return promises, and `toolsFor` takes `{ reader, changes }`.
+`replay` and `backtestMonitors` still take events.
 
 **A tool** for the investigator or MCP clients is a description, its inputs, and a function. Add
 entries beside what `toolsFor` returns:
@@ -303,5 +437,5 @@ entries beside what `toolsFor` returns:
 import type { Tool } from "open-sentinel";
 
 const runbook: Tool = { description: "The runbook for a product area", input: { area: { type: "string", description: "Area name" } }, run: ({ area }) => readRunbook(String(area)) };
-const tools = { ...toolsFor({ view, changes }, { signals: support.signals }), runbook };
+const tools = { ...toolsFor({ reader: memoryReader(events), changes }, { signals: support.signals }), runbook };
 ```

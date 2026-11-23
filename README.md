@@ -28,6 +28,8 @@ message.
 - **One message can be enough.** A data leak or an account takeover pages on the first report.
 - **Try a question before it goes live.** Ask it of stored history first. A week of messages (1,640)
   cost $0.025.
+- **Counts where your data lives.** Postgres, SQLite or DuckDB does the counting. A tick reads back a
+  few hundred rows, at 50k messages a week or at 2M.
 - **Fits your stack.** Alerts go to the console, files, webhooks or OpenTelemetry, and an MCP server
   lets an AI agent investigate.
 
@@ -105,8 +107,9 @@ least 90% sure a message reports a data leak, that one message pages:
 2026-11-22T06:51:30.476Z fired page: event: data_exposure (event msg-1)
 ```
 
-In production, call `watch.tick()` every hour from a timer or a cron job. Each tick can be a fresh
-process, because the watch keeps its state in the store.
+In production, keep events in a database store (`postgresStore` from `open-sentinel/postgres`) and call
+`watch.tick()` every hour from a timer or a cron job. Each tick can be a fresh process, because the
+watch keeps its state in the store.
 
 ## How it works
 
@@ -358,7 +361,7 @@ await pipeline.run(queue.messages(), {
 ```
 
 `onBatch` runs after each batch is stored. A failed event isn't stored, so sending it again labels
-it again. Keeping events in your own database? `storeContract` from `open-sentinel/testing` checks
+it again. Keeping events in another database? `storeContract` from `open-sentinel/testing` checks
 your `Store` ([reference](docs/reference.md#writing-your-own)).
 
 </details>
@@ -434,7 +437,7 @@ Every part is a small interface. Swap one without touching the rest.
 | Part | Included |
 |---|---|
 | Labeler | Decision models on the Vercel AI Gateway, any OpenAI-compatible chat model, or plain rules |
-| Store | In memory, or files |
+| Store | In memory, files, Postgres, SQLite (`node:sqlite`, better-sqlite3, libSQL, Cloudflare D1), DuckDB |
 | Source | Any list or async stream of messages; JSONL files |
 | Alerts | Console, file, webhook, OpenTelemetry logs |
 | Investigation | Six tools for an AI agent, a written report on a group of alerts, an MCP server |
@@ -461,12 +464,17 @@ Two synthetic three-week support inboxes (4,820 and 4,990 messages), replayed wi
 
 - **Real data hasn't been tried yet.** Synthetic incidents describe themselves more clearly than real
   customers do.
-- **Built for tens of thousands of messages a week, not millions.** Each tick rereads its lookback (17
-  days by default), and the file store holds it in memory.
+- **Scale is the database's work.** A tick sends the store a few counts and reads back a few hundred
+  rows, whatever the volume. The counting grows with volume: on a laptop, a tick over 2M messages a week
+  took 40 seconds in Postgres. The file store holds everything in memory; use a database store past
+  about 500k a week. [Measured](docs/evaluation.md#scale).
 - **Attribution needs tags.** Helpdesks and SMS don't send the app version or flag state, so look them
   up when you ingest a message. Without them, suspects are ranked by timing alone.
-- **Run one watch per store.** Two ticks in the same step share alert ids, so sinks can dedupe, but
-  two processes ticking at once can still both save state.
+- **Run each watch in one place.** Two ticks in the same step share alert ids, so sinks can dedupe, but
+  two processes ticking the same watch at once can still both save state.
+- **Many workspaces in one store?** Give each its own watch, scoped with `where`, and set the store's
+  `partition` to the workspace tag so each reads only its own events. Each watch has its own alarm
+  budget.
 - **A storm or a news story moves many customers at once.** That is a real shift, and it alerts.
 
 More in [docs/limits.md](docs/limits.md) and [docs/guarantees.md](docs/guarantees.md).
@@ -474,9 +482,10 @@ More in [docs/limits.md](docs/limits.md) and [docs/guarantees.md](docs/guarantee
 ## Project status
 
 - **Built and tested:** questions and labelers, the pipeline, every monitor, alert delivery, change
-  attribution, backtesting, labeler checks, the MCP server and the OpenTelemetry exporter.
-- **Not built:** connectors to helpdesks or SMS providers, a database store, finding topics nobody wrote
-  a question for, and alert routing (export to the tools that already do it).
+  attribution, backtesting, labeler checks, stores for Postgres, SQLite and DuckDB, the MCP server
+  and the OpenTelemetry exporter.
+- **Not built:** connectors to helpdesks or SMS providers, finding topics nobody wrote a question for,
+  and alert routing (export to the tools that already do it).
 - **May change:** any API, before 1.0.
 
 <details>

@@ -16,8 +16,8 @@ what open-sentinel does when a part fails, and the rules the design holds to.
 | An event is stored late | A one-event monitor still pages for it, up to `lateMs` after it was written. Share monitors count it from the next tick. |
 | The stream stops | `silenceMonitor` fires. Share monitors say `no_data`, and open episodes stay open. |
 | You reword a question | The schema's version changes, and monitors on the new version start with no baseline. `upgrade` moves history across for the cost of the changed questions only. |
-| You change the labeler | Run `compareLabelers` first. The watch counts each event once and tells you (`mixedLabelers`) when its window holds answers from more than one labeler. Pass `labeler` to count only one. |
-| A customer asks to be forgotten | `store.delete({ unit })`. The watch reads the store fresh on every tick, so its counts drop them at once. What a sink was already sent is yours to delete. |
+| You change the labeler | Run `compareLabelers` first. The watch counts each event once, the newest labeler's answer where there are two, and tells you (`mixedLabelers`) when its window holds answers from more than one labeler. Pass `labeler` to count only one. |
+| A customer asks to be forgotten | `store.delete({ unit })`. The watch counts the store fresh on every tick, so its counts drop them at once. What a sink was already sent is yours to delete. |
 
 Two limits on these guarantees:
 
@@ -28,7 +28,8 @@ Two limits on these guarantees:
   alert (with the same ids within a step, as above) and overwrite each other's state: the last
   save wins. `Store` has no compare-and-set, so the watch can't refuse a stale save; a check
   that reads the state back before saving would still let two ticks through. Two different
-  watches over one store need a `stateKey` each.
+  watches over one store need a `stateKey` each. A `jsonlStore` folder and a DuckDB file take one
+  writing process at a time.
 
 ## Rules the design holds to
 
@@ -50,3 +51,6 @@ Two limits on these guarantees:
    none.
 9. **Not knowing is not the same as being clear.** Too little data never resolves an alert, an
    unanswered event is never stored as a no, and a sink that failed is still owed.
+10. **Count where the events are kept.** A tick reads counts, and events only to alert on one or
+    to quote a few. Every store gives the same counts: each is tested against one reference over
+    random histories, and a watch over each says what it says in memory, tick for tick.

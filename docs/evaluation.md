@@ -94,6 +94,114 @@ shuffles, 19 weeks:
 
 Every planted cause shipped within 2 hours of its incident, which flatters timing.
 
+## Scale
+
+A tick used to read every event of its lookback into Node (17 days with the default monitors)
+and count in JavaScript. It now sends the store a few counts and reads back only the events it
+alerts on and the few each notice quotes. Measured with `bench/watch.mjs` on 2026-11-22, on a
+MacBook Pro with an M1 Pro (10 cores, 16 GB) that other work was also using, Node 24.22:
+
+- **The stream:** 17 days of synthetic support messages at the volume a week shown, 21 signals,
+  a customer on every message (a quarter as many customers as messages a week), two tags, 60
+  unrelated deploys and one release that breaks something in the last 3 hours
+  (`bench/stream.mjs`).
+- **The watch:** 125 monitors (every signal at three windows, bug reports and frustration per
+  area, volume, one-event leaks), one tick at the end of the stream, with suspects and examples
+  for every alert it fires.
+- **Before:** the same tick on the code before this change (commit `f8f2f9a`), over
+  `memoryStore`. A database store then had to return every event in the lookback, as the
+  memory store did.
+- **Stores:** Postgres 17 (a local server, through `pg`), SQLite through `node:sqlite` (a file,
+  WAL), DuckDB 1.4 through `@duckdb/node-api` (a file), and PGlite 0.5 (Postgres in
+  WebAssembly, the test database). Each database tick ran in a fresh process that had done
+  nothing else, as a cron job would.
+
+One tick, in seconds:
+
+| Messages a week | Events in store | Before: memory | After: memory | Postgres | SQLite | DuckDB | PGlite |
+|---|---|---|---|---|---|---|---|
+| 50k | 121,428 | 1.3 s | 0.3 s | 0.6 s | 2.5 s | 0.7 s | 3.7 s |
+| 200k | 485,714 | 7.3 s | 1.4 s | 2.6 s | 12 s | 1.4 s | 18 s |
+| 500k | 1,214,285 | 27 s | 4.1 s | 6.6 s | 32 s | 2.4 s | 55 s |
+| 2M | 4,857,142 | not run: the events alone took 4.9 GB of heap | 29 s | 40 s | 162 s | 10 s | not run |
+
+Memory: for the in-memory store, the heap its events take and how far the heap grew during the
+tick; for the databases, the peak memory of the process that ran the tick:
+
+| Messages a week | Before: memory heap (data / tick) | After: memory heap (data / tick) | Postgres tick process | SQLite tick process | DuckDB tick process |
+|---|---|---|---|---|---|
+| 50k | 122 / +17 MB | 130 / +7 MB | 102 MB | 215 MB | 391 MB |
+| 200k | 460 / +165 MB | 488 / +17 MB | 98 MB | 519 MB | 918 MB |
+| 500k | 1158 / +1075 MB | 1228 / +28 MB | 96 MB | 716 MB | 1613 MB |
+| 2M | not run | 4927 / +300 MB | 98 MB | 627 MB | 2776 MB |
+
+Rows the tick read back into Node, and alerts it raised:
+
+| Messages a week | Before (any store) | After: count rows + events (any store) | Alerts fired |
+|---|---|---|---|
+| 50k | 121,428 | 400 + 10 | 3 |
+| 200k | 485,714 | 489 + 24 | 8 |
+| 500k | 1,214,285 | 489 + 57 | 21 |
+| 2M | 4,857,142 (every event in the lookback) | 489 + 154 | 63 |
+
+Filling the store, events a second, in batches of 2,000 through `append`:
+
+| Messages a week | Postgres | SQLite | DuckDB | PGlite |
+|---|---|---|---|---|
+| 50k | 42k | 32k | 43k | 30k |
+| 200k | 36k | 22k | 40k | 28k |
+| 500k | 39k | 15k | 37k | 24k |
+| 2M | 37k | 9k | 37k |  |
+
+Every run raised the same alerts as the code before the change, with the release first among
+the suspects. The number of alerts grows with volume (more messages give the tests more power on
+the same planted rise), and with it the events read for examples and the counts for suspects.
+
+The tables above were measured just before stores gained the `partition` column. Rerun after it
+at 200k a week, the database ticks were within 5% of the table: Postgres 2.65 s, SQLite 12.0 s,
+DuckDB 1.5 s.
+
+**Workspaces.** The same stream at 500k a week split across 50 workspaces, in one Postgres
+store, with one workspace's watch ticking (`where: { workspace }`): 1.13 s without `partition`,
+when every count reads every workspace's events in its windows, and 0.47 s with it.
+
+What this shows:
+
+- **Rows to Node no longer grow with volume.** Before, a tick read every event of its lookback: 121,428 at
+  50k messages a week, 4.86 million at 2M. Now it reads one row per counted window (400 to 489)
+  and the events it alerts on or quotes (10 to 154, at most three per alert), whatever the store.
+- **The process running a database tick stays small.** A fresh process ticking over Postgres peaked at
+  96 to 102 MB at every volume. SQLite and DuckDB run inside the process, so their caches count
+  too: up to 716 MB for SQLite, and 2.8 GB for DuckDB at 2M, which its own `memory_limit` caps.
+- **The database's work grows with volume.** Each tick counts its lookback again. Postgres took 0.6 s at 50k and 40 s at 2M;
+  DuckDB, which is columnar, 0.7 s and 10 s; SQLite, which reads each event's JSON in one
+  thread, 2.5 s and 162 s. PGlite is Postgres compiled to WebAssembly, in one thread: 55 s at
+  500k, and for tests only.
+- **The memory store still holds everything.** Its tick is four to seven times faster than before, but
+  its events take 1.2 GB of heap at 500k a week. It is for tests and development.
+
+### Counting the same
+
+Every store gives the same counts as the code before the change, and the watch the same alerts:
+
+- `src/counting.test.mjs` holds the counting engine to the functions the watch used before
+  (`latestAnswers`, a view, `count` and `countUnits`, and exposure's grouping by kind) on six
+  random histories with customers, missing tags and signals, and copies from three labelers.
+- `storeContract` (`open-sentinel/testing`) holds every store's `count`, `events` and `labelers`
+  to the reference functions on random histories, with late appends, deletes and keys that break
+  naive SQL. `memoryStore`, `jsonlStore`, Postgres (PGlite in the tests, and Postgres 17 through
+  `pg` by hand), SQLite and DuckDB pass it.
+- `src/stores/sql-checks.mjs` runs a watch over the support inbox on each database store, 36
+  hourly ticks around two incidents, and requires every tick (alerts, notices, suspects,
+  examples) to equal the same watch over `memoryStore`.
+- The replay golden tests, the defaults replay and both false-alarm runs (`budget.ts`, 20
+  shuffles; `budget.ts 10 repeats`) print exactly what they printed before the change, and a
+  byte-for-byte comparison of every alert, suspect ranking, watch notice and investigator tool
+  answer on both inboxes and a multi-labeler stream with customers found no difference.
+- `src/pipeline.test.mjs` holds a tick over 81,600 events to bounded reads: every events read
+  has a limit or a signal filter, and what comes back is the first event, the one-event hits,
+  and three examples per alert.
+
 ## Labels and quality checks
 
 `examples/customer-messages/gates.test.mjs` runs the quality checks on the 390 labeled messages,

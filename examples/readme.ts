@@ -5,6 +5,10 @@
 import { test } from "node:test";
 import { auditSample, backtestQuestion, choice, consoleSink, countEvents, countsOf, createPipeline, createWatch, DAY, decisionLabeler, defineSchema, eventMonitor, fitGates, HOUR, jsonlStore, labelersOf, memoryReader, readEvents, shareMonitors, silenceMonitor, toolsFor, yesNo } from "../src/index.ts";
 import type { Change, Json, LabeledEvent, Labeler, Monitor, Sink, Store, TextEvent, Tool } from "../src/index.ts";
+import { DatabaseSync } from "node:sqlite";
+import { duckdbStore } from "../src/stores/duckdb.ts";
+import { postgresStore } from "../src/stores/postgres.ts";
+import { sqliteStore } from "../src/stores/sqlite.ts";
 import { storeContract } from "../src/testing.ts";
 
 // ---- README: the first example ------------------------------------------------------------
@@ -97,6 +101,28 @@ export const checkLabeler = async (store: Store): Promise<void> => {
   createWatch({ schema: support, store, gates, monitors: [eventMonitor({ signal: "data_exposure" })] });
 };
 
+// ---- docs/reference.md: stores ------------------------------------------------------------
+declare const pool: { query(sql: string, params: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }> };
+declare const env: { DB: { prepare(sql: string): { bind(...values: unknown[]): { all(): Promise<{ results: Array<Record<string, unknown>> }> } } } };
+
+export const databaseStores = async (): Promise<Store[]> => {
+  const store = postgresStore({ query: (sql, params) => pool.query(sql, params) });
+  await store.migrate();
+
+  const db = new DatabaseSync("signals.db");
+  const local = sqliteStore({ query: async (sql, params) => ({ rows: db.prepare(sql).all(...params) }) });
+
+  const edge = sqliteStore({
+    query: async (sql, params) => ({ rows: (await env.DB.prepare(sql).bind(...params).all()).results }),
+    maxParams: 100,
+  });
+
+  const { DuckDBInstance } = await import("@duckdb/node-api");
+  const connection = await (await DuckDBInstance.create("signals.duckdb")).connect();
+  const duck = duckdbStore({ query: async (sql, params) => ({ rows: (await connection.runAndReadAll(sql, params)).getRowObjectsJS() }) });
+  return [store, local, edge, duck];
+};
+
 // ---- docs/reference.md: writing your own --------------------------------------------------
 declare const classify: (state: unknown, keys: string[]) => Promise<Record<string, number>>;
 declare const queue: AsyncIterable<{ id: string; receivedAt: number; body: string; accountId: string; appVersion: string }>;
@@ -185,4 +211,7 @@ export const ceilingInSql = (signal: string, share: number): Monitor => ({
 });
 
 const runbook: Tool = { description: "The runbook for a product area", input: { area: { type: "string", description: "Area name" } }, run: ({ area }) => readRunbook(String(area)) };
-export const tools = { ...toolsFor({ reader: memoryReader([]), changes: [] }, { signals: support.signals }), runbook };
+export const withRunbook = (events: LabeledEvent[], changes: Change[]): Record<string, Tool> => {
+  const tools = { ...toolsFor({ reader: memoryReader(events), changes }, { signals: support.signals }), runbook };
+  return tools;
+};

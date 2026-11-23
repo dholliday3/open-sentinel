@@ -29,6 +29,7 @@ The examples run on synthetic data in `examples/`, already labeled, so they need
 
 ```bash
 node examples/support/replay.ts                # both inboxes with the default monitors
+node --expose-gc bench/watch.mjs sqlite 500000 # one tick's cost at 500k messages a week (see bench/watch.mjs)
 node examples/support/budget.ts                # false alerts on shuffled, incident-free data
 node examples/support/budget.ts 10 repeats     # the same, with customers who write more than once
 node examples/support/live.ts                  # real models; needs AI_GATEWAY_API_KEY, about 10 cents
@@ -50,7 +51,10 @@ node examples/support/live.ts                  # real models; needs AI_GATEWAY_A
   (`erasableSyntaxOnly`: no enums, namespaces or parameter properties).
 - **Tests.** Add a test for what can break: a refusal, an edge case, a failure path. Tests are
   `.test.mjs` files beside the code, run by `node --test`.
-- **A new store** runs the shared store tests: add it to the list in `src/store.test.mjs`.
+- **A new store** runs the shared store tests: add it to the list in `src/store.test.mjs`. A new
+  SQL database is a `Dialect` in `src/stores/` beside Postgres, SQLite and DuckDB; its test calls
+  `checkSqlStore` from `src/stores/sql-checks.mjs`, which adds hostile keys and a watch over the
+  support inbox that must equal the in-memory one tick for tick.
 - **README and docs snippets** have type-checked counterparts in `examples/readme.ts`. Change both.
   `examples/readme.test.mjs` runs the README's first example.
 - **Numbers in the docs** need a source: a test, a script in `examples/`, or a recorded run. Say
