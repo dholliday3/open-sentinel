@@ -28,11 +28,11 @@ export const sqliteDialect: Dialect = {
   // Rounds toward zero, which is down for what is never negative; FLOOR isn't in every build.
   whole: (value) => `CAST(${value} AS INTEGER)`,
   ddl: ({ events, changes, state, prefix }) => [
-    `CREATE TABLE IF NOT EXISTS ${events} (seq INTEGER PRIMARY KEY, schema_id TEXT NOT NULL, id TEXT NOT NULL, labeler TEXT NOT NULL, at REAL NOT NULL, unit TEXT, tags TEXT, signals TEXT NOT NULL, probability TEXT NOT NULL, text TEXT, context TEXT, UNIQUE (schema_id, id, labeler))`,
-    `CREATE INDEX IF NOT EXISTS ${prefix}_events_time ON ${events} (schema_id, labeler, at)`,
-    `CREATE INDEX IF NOT EXISTS ${prefix}_events_at ON ${events} (at)`,
+    `CREATE TABLE IF NOT EXISTS ${events} (seq INTEGER PRIMARY KEY, schema_id TEXT NOT NULL, id TEXT NOT NULL, labeler TEXT NOT NULL, at_ms REAL NOT NULL, unit TEXT, tags TEXT, signals TEXT NOT NULL, probability TEXT NOT NULL, text TEXT, context TEXT, UNIQUE (schema_id, id, labeler))`,
+    `CREATE INDEX IF NOT EXISTS ${prefix}_events_time ON ${events} (schema_id, labeler, at_ms)`,
+    `CREATE INDEX IF NOT EXISTS ${prefix}_events_at ON ${events} (at_ms)`,
     `CREATE INDEX IF NOT EXISTS ${prefix}_events_unit ON ${events} (unit) WHERE unit IS NOT NULL`,
-    `CREATE TABLE IF NOT EXISTS ${changes} (seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, at REAL NOT NULL, change TEXT NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS ${changes} (seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, at_ms REAL NOT NULL, change TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${state} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   ],
   // SQLite's own limit before 3.32; Cloudflare D1 takes 100.

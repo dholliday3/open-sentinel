@@ -52,6 +52,8 @@ export interface Dialect {
   maxParams: number;
   /** Ends a subquery so it is worked out on its own, not merged into the query around it: Postgres's `OFFSET 0`. */
   fence: string;
+  /** True when the database takes one statement at a time on a connection: the store then waits for each before sending the next. */
+  serial?: boolean;
   /** A last change to a statement before it runs: SQLite drivers that only take `?` get one per use, in order. */
   finish?(sql: string, params: unknown[]): { sql: string; params: unknown[] };
 }
@@ -103,8 +105,8 @@ type Params = ReturnType<typeof paramsOf>;
 /** 2 to the n, written exactly: past 2^53 a JavaScript number would print rounded. */
 const bitOf = (n: number): string => (1n << BigInt(n)).toString();
 
-/** A time as a parameter: infinities, which JSON and some drivers can't carry, become the largest finite numbers. */
-const bound = (value: number): number => (value === Infinity ? Number.MAX_VALUE : value === -Infinity ? -Number.MAX_VALUE : value);
+/** A time as a parameter: an infinity, which JSON and some drivers can't carry, becomes the furthest whole millisecond a number holds exactly. */
+const bound = (value: number): number => (value === Infinity ? Number.MAX_SAFE_INTEGER : value === -Infinity ? -Number.MAX_SAFE_INTEGER : value);
 
 /** Keys sorted, so tags stored as text compare equal when they are equal. */
 const sortedTags = (tags: Tags): Tags => Object.fromEntries(Object.entries(tags).sort(([a], [b]) => (a < b ? -1 : 1)));
@@ -142,10 +144,18 @@ const runsOf = (windows: CountQuery["windows"]): { runs: Array<{ o: number; s: n
   return { runs, places: sorted.map((window) => window.given) };
 };
 
-const EVENT_COLUMNS = { i: "integer", schema_id: "text", id: "text", labeler: "text", at: "double", unit: "text", tags: "json", signals: "json", probability: "text", text: "text", context: "json" } as const;
+const EVENT_COLUMNS = { i: "integer", schema_id: "text", id: "text", labeler: "text", at_ms: "double", unit: "text", tags: "json", signals: "json", probability: "text", text: "text", context: "json" } as const;
 
-export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParams = dialect.maxParams }: SqlStoreOptions): SqlStore => {
+export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, maxParams = dialect.maxParams }: SqlStoreOptions): SqlStore => {
   const tables = tablesOf(table);
+  let last: Promise<unknown> = Promise.resolve();
+  const query: Query = dialect.serial
+    ? (sql, params) => {
+        const next = last.then(() => given(sql, params));
+        last = next.catch(() => undefined);
+        return next;
+      }
+    : given;
   const { events, changes, state } = tables;
   const run = async (sql: string, params: Params | unknown[] = []): Promise<ReadonlyArray<Record<string, unknown>>> => {
     const values = Array.isArray(params) ? params : params.values;
@@ -171,8 +181,8 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
       return conditions;
     }
     // Kept: the preferred labeler's copy, or the first copy when it has none, among copies in the stretch.
-    const earlier = `SELECT 1 FROM ${events} o WHERE o.schema_id = e.schema_id AND o.id = e.id AND o.at >= ${params.number(rule.from)} AND o.at < ${params.number(rule.to)} AND (o.labeler = ${params.text(rule.prefer)} OR o.at < e.at OR (o.at = e.at AND o.seq < e.seq))`;
-    return [...conditions, `e.at >= ${params.number(rule.from)}`, `e.at < ${params.number(rule.to)}`, `(e.labeler = ${params.text(rule.prefer)} OR NOT EXISTS (${earlier}))`];
+    const earlier = `SELECT 1 FROM ${events} o WHERE o.schema_id = e.schema_id AND o.id = e.id AND o.at_ms >= ${params.number(rule.from)} AND o.at_ms < ${params.number(rule.to)} AND (o.labeler = ${params.text(rule.prefer)} OR o.at_ms < e.at_ms OR (o.at_ms = e.at_ms AND o.seq < e.seq))`;
+    return [...conditions, `e.at_ms >= ${params.number(rule.from)}`, `e.at_ms < ${params.number(rule.to)}`, `(e.labeler = ${params.text(rule.prefer)} OR NOT EXISTS (${earlier}))`];
   };
   /** A signal part at its gate, as 1 or 0. */
   const atGate = (params: Params, key: string, gate: number): string => `CASE WHEN COALESCE(${dialect.number("e.signals", params.key(key))}, 0) >= ${params.number(gate)} THEN 1 ELSE 0 END`;
@@ -214,17 +224,17 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
     if (runs.length === 0) {
       return countedNothing(query);
     }
-    conditions.push(`e.at >= ${params.number(Math.min(...runs.map((run) => run.s)))}`, `e.at < ${params.number(Math.max(...runs.map((run) => run.e)))}`);
-    const scan = `SELECT ${["e.at AS at", "e.seq AS seq", "e.unit AS unit", ...groupColumns, ...partColumns].join(", ")} FROM ${events} e WHERE ${conditions.join(" AND ")}${dialect.fence}`;
+    conditions.push(`e.at_ms >= ${params.number(Math.min(...runs.map((run) => run.s)))}`, `e.at_ms < ${params.number(Math.max(...runs.map((run) => run.e)))}`);
+    const scan = `SELECT ${["e.at_ms AS at_ms", "e.seq AS seq", "e.unit AS unit", ...groupColumns, ...partColumns].join(", ")} FROM ${events} e WHERE ${conditions.join(" AND ")}${dialect.fence}`;
     const table = dialect.rows(params.add(JSON.stringify(runs)), "ru", { o: "integer", s: "double", l: "double", n: "integer", e: "double" });
-    const placed = `SELECT ru.o + CASE WHEN ru.n = 1 THEN 0 ELSE ${dialect.whole("(x.at - ru.s) / ru.l")} END AS win, x.* FROM ${table} JOIN (${scan}) x ON x.at >= ru.s AND x.at < ru.e`;
+    const placed = `SELECT ru.o + CASE WHEN ru.n = 1 THEN 0 ELSE ${dialect.whole("(x.at_ms - ru.s) / ru.l")} END AS win, x.* FROM ${table} JOIN (${scan}) x ON x.at_ms >= ru.s AND x.at_ms < ru.e`;
     const product = (ids: number[]): string => (ids.length === 0 ? "1" : ids.map(bit).join(" * "));
     const keys = ["win", ...groups].join(", ");
     const r = `r AS (${placed})`;
     const sql =
       query.per === "event"
-        ? `WITH ${r} SELECT ${keys}, COUNT(*) AS total, COUNT(*) AS n, MIN(at) AS first${signals.map((ids, s) => `, SUM(${product(ids)}) AS y${s}`).join("")} FROM r GROUP BY ${keys}`
-        : `WITH ${r}, u AS (SELECT ${keys}, COUNT(*) AS n, MIN(at) AS first${signals.map((ids, s) => `, MAX(${product(ids)}) AS y${s}`).join("")} FROM r GROUP BY ${keys}, unit, CASE WHEN unit IS NULL THEN seq END) SELECT ${keys}, COUNT(*) AS total, SUM(n) AS n, MIN(first) AS first${signals.map((_, s) => `, SUM(y${s}) AS y${s}`).join("")} FROM u GROUP BY ${keys}`;
+        ? `WITH ${r} SELECT ${keys}, COUNT(*) AS total, COUNT(*) AS n, MIN(at_ms) AS first${signals.map((ids, s) => `, SUM(${product(ids)}) AS y${s}`).join("")} FROM r GROUP BY ${keys}`
+        : `WITH ${r}, u AS (SELECT ${keys}, COUNT(*) AS n, MIN(at_ms) AS first${signals.map((ids, s) => `, MAX(${product(ids)}) AS y${s}`).join("")} FROM r GROUP BY ${keys}, unit, CASE WHEN unit IS NULL THEN seq END) SELECT ${keys}, COUNT(*) AS total, SUM(n) AS n, MIN(first) AS first${signals.map((_, s) => `, SUM(y${s}) AS y${s}`).join("")} FROM u GROUP BY ${keys}`;
     if (params.values.length > maxParams && query.signals.length > 1) {
       // Too many parameters for one statement (D1 takes 100): count the signals in two halves.
       const half = Math.ceil(query.signals.length / 2);
@@ -255,7 +265,7 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
     const context = dialect.parse(row.context) as Record<string, Json> | null;
     return {
       id: String(row.id),
-      at: Number(row.at),
+      at: Number(row.at_ms),
       ...(row.text === null || row.text === undefined ? {} : { text: String(row.text) }),
       ...(context === null || context === undefined ? {} : { context }),
       ...(row.unit === null || row.unit === undefined ? {} : { unit: String(row.unit) }),
@@ -278,7 +288,7 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
       const seen = new Set<string>();
       const fresh = added.filter((event) => !seen.has(eventKey(event)) && seen.add(eventKey(event)));
       for (let start = 0; start < fresh.length; start += batch) {
-        const rows = fresh.slice(start, start + batch).map((event, i) => ({ i, schema_id: event.schema, id: event.id, labeler: event.labeler, at: event.at, unit: event.unit ?? null, tags: event.tags ? sortedTags(event.tags) : null, signals: event.signals, probability: event.probability, text: event.text ?? null, context: event.context ?? null }));
+        const rows = fresh.slice(start, start + batch).map((event, i) => ({ i, schema_id: event.schema, id: event.id, labeler: event.labeler, at_ms: event.at, unit: event.unit ?? null, tags: event.tags ? sortedTags(event.tags) : null, signals: event.signals, probability: event.probability, text: event.text ?? null, context: event.context ?? null }));
         const params = paramsOf(dialect);
         const source = dialect.rows(params.add(JSON.stringify(rows)), "x", EVENT_COLUMNS);
         const columns = Object.keys(EVENT_COLUMNS).filter((column) => column !== "i");
@@ -292,10 +302,10 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
       const params = paramsOf(dialect);
       const conditions = [...answers(params, query)];
       if (query.from !== undefined) {
-        conditions.push(`e.at >= ${params.number(query.from)}`);
+        conditions.push(`e.at_ms >= ${params.number(query.from)}`);
       }
       if (query.to !== undefined) {
-        conditions.push(`e.at < ${params.number(query.to)}`);
+        conditions.push(`e.at_ms < ${params.number(query.to)}`);
       }
       if (query.where) {
         conditions.push(...tagged(params, query.where));
@@ -309,13 +319,13 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
       }
       // Events at the same time come in the order stored; with one answer per event, in the order their first copies were.
       const rule = query.labeler === undefined ? query.oneAnswer : undefined;
-      const firstCopy = (column: "at" | "seq"): string =>
-        `(SELECT o.${column} FROM ${events} o WHERE o.schema_id = e.schema_id AND o.id = e.id AND o.at >= ${params.number(rule!.from)} AND o.at < ${params.number(rule!.to)} ORDER BY o.at, o.seq LIMIT 1)`;
-      const ranks = rule ? `${firstCopy("at")} AS rank_at, ${firstCopy("seq")} AS rank_seq` : "0 AS rank_at, e.seq AS rank_seq";
+      const firstCopy = (column: "at_ms" | "seq"): string =>
+        `(SELECT o.${column} FROM ${events} o WHERE o.schema_id = e.schema_id AND o.id = e.id AND o.at_ms >= ${params.number(rule!.from)} AND o.at_ms < ${params.number(rule!.to)} ORDER BY o.at_ms, o.seq LIMIT 1)`;
+      const ranks = rule ? `${firstCopy("at_ms")} AS rank_at, ${firstCopy("seq")} AS rank_seq` : "0 AS rank_at, e.seq AS rank_seq";
       const order = query.order ?? "oldest";
       const surest = typeof order === "object" ? `${dialect.least(order.surest.map((key) => `COALESCE(${dialect.number("e.signals", params.key(key))}, 0)`))} AS sureness, ` : "";
-      const by = typeof order === "object" ? "sureness DESC, at DESC, rank_at, rank_seq" : order === "newest" ? "at DESC, rank_at DESC, rank_seq DESC" : "at, rank_at, rank_seq";
-      const inner = `SELECT e.schema_id, e.id, e.labeler, e.at, e.unit, e.tags, e.signals, e.probability, e.text, e.context, ${surest}${ranks} FROM ${events} e WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")}`;
+      const by = typeof order === "object" ? "sureness DESC, at_ms DESC, rank_at, rank_seq" : order === "newest" ? "at_ms DESC, rank_at DESC, rank_seq DESC" : "at_ms, rank_at, rank_seq";
+      const inner = `SELECT e.schema_id, e.id, e.labeler, e.at_ms, e.unit, e.tags, e.signals, e.probability, e.text, e.context, ${surest}${ranks} FROM ${events} e WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")}`;
       const picked = query.onePerUnit ? `SELECT * FROM (SELECT x.*, ROW_NUMBER() OVER (PARTITION BY COALESCE(x.unit, x.id) ORDER BY ${by}) AS place FROM (${inner}) x) y WHERE place = 1` : `SELECT * FROM (${inner}) y`;
       const limit = query.limit === undefined ? "" : ` LIMIT ${params.add(Math.floor(query.limit))}`;
       return (await run(`${picked} ORDER BY ${by}${limit}`, params)).map(fromRow);
@@ -333,11 +343,11 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
       const params = paramsOf(dialect);
       const ends = found.flatMap(({ labeler }) =>
         (["ASC", "DESC"] as const).map((direction) => {
-          const conditions = [`e.schema_id = ${params.text(schema)}`, `e.labeler = ${params.text(String(labeler))}`, ...(from === undefined ? [] : [`e.at >= ${params.number(from)}`]), ...(to === undefined ? [] : [`e.at < ${params.number(to)}`]), ...(where ? tagged(params, where) : [])];
-          return `SELECT * FROM (SELECT '${direction}' AS side, e.labeler AS labeler, e.at AS at, e.seq AS seq FROM ${events} e WHERE ${conditions.join(" AND ")} ORDER BY e.at ${direction}, e.seq ${direction} LIMIT 1) ${direction === "ASC" ? "f" : "l"}`;
+          const conditions = [`e.schema_id = ${params.text(schema)}`, `e.labeler = ${params.text(String(labeler))}`, ...(from === undefined ? [] : [`e.at_ms >= ${params.number(from)}`]), ...(to === undefined ? [] : [`e.at_ms < ${params.number(to)}`]), ...(where ? tagged(params, where) : [])];
+          return `SELECT * FROM (SELECT '${direction}' AS side, e.labeler AS labeler, e.at_ms AS at_ms, e.seq AS seq FROM ${events} e WHERE ${conditions.join(" AND ")} ORDER BY e.at_ms ${direction}, e.seq ${direction} LIMIT 1) ${direction === "ASC" ? "f" : "l"}`;
         }),
       );
-      const rows = (await run(ends.join(" UNION ALL "), params)).map((row) => ({ side: String(row.side), labeler: String(row.labeler), at: Number(row.at), seq: Number(row.seq) }));
+      const rows = (await run(ends.join(" UNION ALL "), params)).map((row) => ({ side: String(row.side), labeler: String(row.labeler), at: Number(row.at_ms), seq: Number(row.seq) }));
       const order = (a: { at: number; seq: number }, b: { at: number; seq: number }): number => a.at - b.at || a.seq - b.seq;
       const firsts = rows.filter((row) => row.side === "ASC").sort(order);
       const newest = rows.filter((row) => row.side === "DESC").sort(order).at(-1)?.labeler;
@@ -357,7 +367,7 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
         return 0;
       }
       const params = paramsOf(dialect);
-      const conditions = [...(before === undefined ? [] : [`at < ${params.number(before)}`]), ...(unit === undefined ? [] : [`unit = ${params.text(unit)}`])].join(" AND ");
+      const conditions = [...(before === undefined ? [] : [`at_ms < ${params.number(before)}`]), ...(unit === undefined ? [] : [`unit = ${params.text(unit)}`])].join(" AND ");
       // Counted just before, so a delete of millions doesn't send millions of rows back.
       const [counted] = await run(`SELECT COUNT(*) AS n FROM ${events} WHERE ${conditions}`, params);
       await run(`DELETE FROM ${events} WHERE ${conditions}`, params);
@@ -365,12 +375,12 @@ export const sqlStore = (dialect: Dialect, { query, table, batch = 500, maxParam
     },
     recordChange: async (change) => {
       const params = paramsOf(dialect);
-      await run(`INSERT INTO ${changes} (id, at, change) VALUES (${params.text(change.id)}, ${params.number(change.at)}, ${dialect.json(params.add(JSON.stringify(change)))}) ON CONFLICT (id) DO UPDATE SET at = excluded.at, change = excluded.change`, params);
+      await run(`INSERT INTO ${changes} (id, at_ms, change) VALUES (${params.text(change.id)}, ${params.number(change.at)}, ${dialect.json(params.add(JSON.stringify(change)))}) ON CONFLICT (id) DO UPDATE SET at_ms = excluded.at_ms, change = excluded.change`, params);
     },
     changes: async ({ from, to } = {}) => {
       const params = paramsOf(dialect);
-      const conditions = [...(from === undefined ? [] : [`at >= ${params.number(from)}`]), ...(to === undefined ? [] : [`at < ${params.number(to)}`])];
-      return (await run(`SELECT change FROM ${changes}${conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`} ORDER BY at, seq`, params)).map((row) => dialect.parse(row.change) as Change);
+      const conditions = [...(from === undefined ? [] : [`at_ms >= ${params.number(from)}`]), ...(to === undefined ? [] : [`at_ms < ${params.number(to)}`])];
+      return (await run(`SELECT change FROM ${changes}${conditions.length === 0 ? "" : ` WHERE ${conditions.join(" AND ")}`} ORDER BY at_ms, seq`, params)).map((row) => dialect.parse(row.change) as Change);
     },
     loadState: async (key) => {
       const [row] = await run(`SELECT value FROM ${state} WHERE key = ${dialect.placeholder(1)}`, [key]);

@@ -24,6 +24,10 @@
     "./sqlite": {
       "types": "./dist/src/stores/sqlite.d.ts",
       "default": "./dist/src/stores/sqlite.js"
+    },
+    "./duckdb": {
+      "types": "./dist/src/stores/duckdb.d.ts",
+      "default": "./dist/src/stores/duckdb.js"
     }
   },
   "bin": {
@@ -40,6 +44,7 @@
     "type-check": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@duckdb/node-api": "1.4.5-r.1",
     "@electric-sql/pglite": "0.5.15",
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@opentelemetry/otlp-transformer": "0.211.0",
