@@ -3,8 +3,8 @@
 // compile. When you change a snippet in either file, change it here. The README's real-world
 // examples are in recipes.ts.
 import { test } from "node:test";
-import { auditSample, backtestQuestion, choice, consoleSink, count, createPipeline, createWatch, DAY, decisionLabeler, defineSchema, eventMonitor, fitGates, HOUR, jsonlStore, shareMonitors, silenceMonitor, toolsFor, viewOf, yesNo } from "../src/index.ts";
-import type { LabeledEvent, Labeler, Monitor, Sink, Store, TextEvent, Tool } from "../src/index.ts";
+import { auditSample, backtestQuestion, choice, consoleSink, count, countEvents, createPipeline, createWatch, DAY, decisionLabeler, defineSchema, eventMonitor, fitGates, HOUR, jsonlStore, labelersOf, readEvents, shareMonitors, silenceMonitor, toolsFor, viewOf, yesNo } from "../src/index.ts";
+import type { Change, Json, LabeledEvent, Labeler, Monitor, Sink, Store, TextEvent, Tool } from "../src/index.ts";
 import { storeContract } from "../src/testing.ts";
 
 // ---- README: the first example ------------------------------------------------------------
@@ -105,6 +105,16 @@ declare const readRunbook: (area: string) => string;
 declare const sql: { count(query: string, values: unknown[]): Promise<{ yes: number; total: number }> };
 declare const pipeline: ReturnType<typeof createPipeline>;
 declare const freshPostgresStore: () => Store;
+declare const stored: {
+  push(events: readonly LabeledEvent[]): Promise<void>;
+  all(): Promise<LabeledEvent[]>;
+  has(id: string, schema: string, labeler: string): boolean;
+  remove(query: { before?: number; unit?: string }): Promise<number>;
+  putChange(change: Change): Promise<void>;
+  changesBetween(from?: number, to?: number): Promise<Change[]>;
+  get(key: string): Promise<Json | undefined>;
+  put(key: string, value: Json): Promise<void>;
+};
 
 export const mine: Labeler = {
   id: "my-classifier@2026-11-01",
@@ -115,15 +125,17 @@ export const mine: Labeler = {
   },
 };
 
-export const postgres: Store = {
-  append: async (_events) => {},
-  events: async ({ from: _from, to: _to, schema: _schema, labeler: _labeler } = {}) => [],
-  known: async (_ids, _schema, _labeler) => new Set(),
-  delete: async ({ before: _before, unit: _unit }) => 0,
-  recordChange: async (_change) => {},
-  changes: async ({ from: _from, to: _to } = {}) => [],
-  loadState: async (_key) => undefined,
-  saveState: async (_key, _value) => {},
+export const kv: Store = {
+  append: async (events) => { await stored.push(events); },
+  events: async (query) => readEvents(await stored.all(), query),
+  count: async (query) => countEvents(await stored.all(), query),
+  labelers: async (query) => labelersOf(await stored.all(), query),
+  known: async (ids, schema, labeler) => new Set(ids.filter((id) => stored.has(id, schema, labeler))),
+  delete: async ({ before, unit }) => stored.remove({ before, unit }),
+  recordChange: async (change) => { await stored.putChange(change); },
+  changes: async ({ from, to } = {}) => stored.changesBetween(from, to),
+  loadState: async (key) => stored.get(key),
+  saveState: async (key, value) => { await stored.put(key, value); },
 };
 
 export const checkPostgres = (): void => {

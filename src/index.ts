@@ -11,6 +11,7 @@ export * from "./labeler.ts";
 export * from "./labelers/gateway.ts";
 export * from "./labelers/chat.ts";
 export * from "./labelers/rules.ts";
+export * from "./counting.ts";
 export * from "./store.ts";
 export * from "./stores/jsonl.ts";
 export * from "./metrics.ts";

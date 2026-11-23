@@ -1,7 +1,9 @@
 // A store in three files in one folder: `events.jsonl` and `changes.jsonl`, appended to, and
-// `state.json`. For one writer at a time: a small deployment, a backfill, an example. It keeps
-// everything in memory, and reads the files again whenever they have changed since it last did,
-// so a reader in another process (the MCP server, a long-running watch) sees what the writer adds.
+// `state.json`. The development store: one writer at a time, one process holding everything in
+// memory (as `memoryStore` does, and counting as it does). It reads the files again whenever they
+// have changed since it last did, so a reader in another process (the MCP server, a long-running
+// watch) sees what the writer adds. For more than a few hundred thousand events, or more than one
+// writer, use a database store.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { eventKey, memoryStore } from "../store.ts";
@@ -68,6 +70,8 @@ export const jsonlStore = (dir: string): Store => {
   };
   return {
     events: (query) => current().events(query),
+    count: (query) => current().count(query),
+    labelers: (query) => current().labelers(query),
     known: (ids, schema, labeler) => current().known(ids, schema, labeler),
     changes: (query) => current().changes(query),
     loadState: (key) => current().loadState(key),
