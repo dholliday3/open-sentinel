@@ -17,8 +17,8 @@ const query = async (sql, params) => ({ rows: db.prepare(sql).all(...params) });
 
 checkSqlStore(
   "sqliteStore",
-  async (table) => {
-    const store = sqliteStore({ query, table });
+  async (table, partition) => {
+    const store = sqliteStore({ query, table, ...(partition ? { partition } : {}) });
     await store.migrate();
     return store;
   },

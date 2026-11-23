@@ -157,9 +157,6 @@ export const keepOne = (copies: readonly Ranked[], prefer: string): Ranked[] => 
   return [...kept.values()].sort(byTimeThenRank);
 };
 
-/** The extent of some windows: where one answer per event is decided when a count doesn't say. */
-export const extentOf = (windows: readonly Interval[]): Interval => ({ from: Math.min(...windows.map((w) => w.from)), to: Math.max(...windows.map((w) => w.to)) });
-
 const groupKeyOf = (groupBy: GroupBy | undefined): ((event: LabeledEvent) => { key: string; group: Tags }) | undefined => {
   if (!groupBy) {
     return undefined;

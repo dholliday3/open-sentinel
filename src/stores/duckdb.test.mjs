@@ -16,8 +16,8 @@ const query = async (sql, params) => ({ rows: (await connection.runAndReadAll(sq
 
 checkSqlStore(
   "duckdbStore",
-  async (table) => {
-    const store = duckdbStore({ query, table });
+  async (table, partition) => {
+    const store = duckdbStore({ query, table, ...(partition ? { partition } : {}) });
     await store.migrate();
     return store;
   },

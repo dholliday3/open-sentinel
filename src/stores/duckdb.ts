@@ -28,7 +28,7 @@ export const duckdbDialect: Dialect = {
   // No indexes past the primary key: DuckDB skips row groups by their range of `at` instead.
   ddl: ({ events, changes, state }) => [
     `CREATE SEQUENCE IF NOT EXISTS ${events}_seq`,
-    `CREATE TABLE IF NOT EXISTS ${events} (seq BIGINT DEFAULT nextval('${events}_seq'), schema_id VARCHAR NOT NULL, id VARCHAR NOT NULL, labeler VARCHAR NOT NULL, at_ms DOUBLE NOT NULL, unit VARCHAR, tags JSON, signals JSON NOT NULL, probability VARCHAR NOT NULL, text VARCHAR, context JSON, PRIMARY KEY (schema_id, id, labeler))`,
+    `CREATE TABLE IF NOT EXISTS ${events} (seq BIGINT DEFAULT nextval('${events}_seq'), schema_id VARCHAR NOT NULL, id VARCHAR NOT NULL, labeler VARCHAR NOT NULL, at_ms DOUBLE NOT NULL, unit VARCHAR, tags JSON, signals JSON NOT NULL, probability VARCHAR NOT NULL, text VARCHAR, context JSON, part VARCHAR, PRIMARY KEY (schema_id, id, labeler))`,
     `CREATE SEQUENCE IF NOT EXISTS ${changes}_seq`,
     `CREATE TABLE IF NOT EXISTS ${changes} (seq BIGINT DEFAULT nextval('${changes}_seq'), id VARCHAR PRIMARY KEY, at_ms DOUBLE NOT NULL, change JSON NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${state} (key VARCHAR PRIMARY KEY, value JSON NOT NULL)`,
@@ -43,6 +43,6 @@ export const duckdbDialect: Dialect = {
 export const duckdbStore = (options: SqlStoreOptions): SqlStore => sqlStore(duckdbDialect, options);
 
 /** The tables and sequences `duckdbStore` needs, as SQL. */
-export const duckdbSchema = (table?: string): string => schemaSql(duckdbDialect, table);
+export const duckdbSchema = (table?: string, partition?: string): string => schemaSql(duckdbDialect, table, partition);
 
-export type { Query, SqlStore, SqlStoreOptions } from "./sql.ts";
+export type { Query, SqlStore, SqlStoreOptions, SqlValue } from "./sql.ts";

@@ -23,9 +23,10 @@ export const postgresDialect: Dialect = {
   parse: (value) => value ?? null,
   least: (values) => (values.length === 1 ? values[0]! : `LEAST(${values.join(", ")})`),
   whole: (value) => `CAST(FLOOR(${value}) AS INTEGER)`,
-  ddl: ({ events, changes, state, prefix }) => [
-    `CREATE TABLE IF NOT EXISTS ${events} (seq BIGINT GENERATED ALWAYS AS IDENTITY, schema_id TEXT NOT NULL, id TEXT NOT NULL, labeler TEXT NOT NULL, at_ms DOUBLE PRECISION NOT NULL, unit TEXT, tags JSONB, signals JSONB NOT NULL, probability TEXT NOT NULL, text TEXT, context JSONB, PRIMARY KEY (schema_id, id, labeler))`,
+  ddl: ({ events, changes, state, prefix, partitioned }) => [
+    `CREATE TABLE IF NOT EXISTS ${events} (seq BIGINT GENERATED ALWAYS AS IDENTITY, schema_id TEXT NOT NULL, id TEXT NOT NULL, labeler TEXT NOT NULL, at_ms DOUBLE PRECISION NOT NULL, unit TEXT, tags JSONB, signals JSONB NOT NULL, probability TEXT NOT NULL, text TEXT, context JSONB, part TEXT, PRIMARY KEY (schema_id, id, labeler))`,
     `CREATE INDEX IF NOT EXISTS ${prefix}_events_time ON ${events} (schema_id, labeler, at_ms)`,
+    ...(partitioned ? [`CREATE INDEX IF NOT EXISTS ${prefix}_events_part ON ${events} (schema_id, part, labeler, at_ms)`] : []),
     `CREATE INDEX IF NOT EXISTS ${prefix}_events_at ON ${events} (at_ms)`,
     `CREATE INDEX IF NOT EXISTS ${prefix}_events_unit ON ${events} (unit) WHERE unit IS NOT NULL`,
     `CREATE TABLE IF NOT EXISTS ${changes} (seq BIGINT GENERATED ALWAYS AS IDENTITY, id TEXT PRIMARY KEY, at_ms DOUBLE PRECISION NOT NULL, change JSONB NOT NULL)`,
@@ -40,6 +41,6 @@ export const postgresDialect: Dialect = {
 export const postgresStore = (options: SqlStoreOptions): SqlStore => sqlStore(postgresDialect, options);
 
 /** The tables and indexes `postgresStore` needs, as SQL. */
-export const postgresSchema = (table?: string): string => schemaSql(postgresDialect, table);
+export const postgresSchema = (table?: string, partition?: string): string => schemaSql(postgresDialect, table, partition);
 
-export type { Query, SqlStore, SqlStoreOptions } from "./sql.ts";
+export type { Query, SqlStore, SqlStoreOptions, SqlValue } from "./sql.ts";

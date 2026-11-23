@@ -11,8 +11,11 @@ import { eventKey } from "../store.ts";
 import type { Store } from "../store.ts";
 import type { Change, Json, LabeledEvent, TagFilter, Tags } from "../types.ts";
 
+/** What a parameter can be: every driver takes these. */
+export type SqlValue = string | number | null;
+
 /** Runs one statement with positional parameters. `pg`'s `Pool.query` fits as it is. */
-export type Query = (sql: string, params: unknown[]) => Promise<{ rows: ReadonlyArray<Record<string, unknown>> }>;
+export type Query = (sql: string, params: SqlValue[]) => Promise<{ rows: ReadonlyArray<Record<string, unknown>> }>;
 
 export type ColumnType = "integer" | "double" | "text" | "json";
 
@@ -22,6 +25,8 @@ export interface Tables {
   state: string;
   /** What index names start with: the events table's name without a schema. */
   prefix: string;
+  /** True when one tag splits the store into workspaces, kept in the indexed column `part`. */
+  partitioned: boolean;
 }
 
 export interface Dialect {
@@ -34,7 +39,7 @@ export interface Dialect {
   /** The text under a JSON key (bound with `key`), or NULL when it is absent or null. */
   text(column: string, key: string): string;
   /** The JSON column without these keys, binding them with `bind`: the same for the same tags. */
-  without(column: string, keys: readonly string[], bind: (value: unknown) => string): string;
+  without(column: string, keys: readonly string[], bind: (value: SqlValue) => string): string;
   /** A table read from one parameter holding a JSON array of objects, as a FROM item named `alias`. */
   rows(param: string, alias: string, columns: Readonly<Record<string, ColumnType>>): string;
   /** A parameter holding JSON text, as a value of the JSON column type. */
@@ -55,7 +60,7 @@ export interface Dialect {
   /** True when the database takes one statement at a time on a connection: the store then waits for each before sending the next. */
   serial?: boolean;
   /** A last change to a statement before it runs: SQLite drivers that only take `?` get one per use, in order. */
-  finish?(sql: string, params: unknown[]): { sql: string; params: unknown[] };
+  finish?(sql: string, params: SqlValue[]): { sql: string; params: SqlValue[] };
 }
 
 export interface SqlStoreOptions {
@@ -66,6 +71,13 @@ export interface SqlStoreOptions {
   batch?: number;
   /** Fewer parameters per statement than the dialect allows: Cloudflare D1 takes 100. */
   maxParams?: number;
+  /**
+   * A tag that splits the store into workspaces, such as `workspace`. Its value is kept in a
+   * column of its own, indexed, so a watch over one workspace (`where: { workspace: "acme" }`)
+   * reads only that workspace's events. Set it when the tables are created: events stored
+   * before it was set aren't found by it.
+   */
+  partition?: string;
 }
 
 export interface SqlStore extends Store {
@@ -75,20 +87,20 @@ export interface SqlStore extends Store {
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,40}(\.[A-Za-z_][A-Za-z0-9_]{0,40})?$/;
 
-export const tablesOf = (table = "sentinel"): Tables => {
+export const tablesOf = (table = "sentinel", partition?: string): Tables => {
   if (!NAME.test(table)) {
     throw new Error(`"${table}" can't name a table: use letters, digits and underscores, optionally after a schema and a dot`);
   }
-  return { events: `${table}_events`, changes: `${table}_changes`, state: `${table}_state`, prefix: table.split(".").at(-1)! };
+  return { events: `${table}_events`, changes: `${table}_changes`, state: `${table}_state`, prefix: table.split(".").at(-1)!, partitioned: partition !== undefined };
 };
 
 /** The statements that create a store's tables, as one script: for a migration tool of your own. */
-export const schemaSql = (dialect: Dialect, table?: string): string => `${dialect.ddl(tablesOf(table)).join(";\n")};\n`;
+export const schemaSql = (dialect: Dialect, table?: string, partition?: string): string => `${dialect.ddl(tablesOf(table, partition)).join(";\n")};\n`;
 
 /** Collects parameters and writes their placeholders. */
 const paramsOf = (dialect: Dialect) => {
-  const values: unknown[] = [];
-  const add = (value: unknown): string => {
+  const values: SqlValue[] = [];
+  const add = (value: SqlValue): string => {
     values.push(value);
     return dialect.placeholder(values.length);
   };
@@ -117,7 +129,9 @@ const countedNothing = (query: CountQuery): CountRow[] => (query.groupBy ? [] : 
 /**
  * The windows with anything in them, by length and then time, as runs of back-to-back windows
  * of one whole-millisecond length (one window alone is a run of one), and for each window's
- * place in that order, the windows given there.
+ * place in that order, the windows given there. An event finds its window in a run by
+ * arithmetic rather than by comparison with every window: a tick's 69 baseline windows are
+ * three runs.
  */
 const runsOf = (windows: CountQuery["windows"]): { runs: Array<{ o: number; s: number; l: number; n: number; e: number }>; places: number[][] } => {
   const distinct = new Map<string, { from: number; to: number; given: number[] }>();
@@ -144,10 +158,10 @@ const runsOf = (windows: CountQuery["windows"]): { runs: Array<{ o: number; s: n
   return { runs, places: sorted.map((window) => window.given) };
 };
 
-const EVENT_COLUMNS = { i: "integer", schema_id: "text", id: "text", labeler: "text", at_ms: "double", unit: "text", tags: "json", signals: "json", probability: "text", text: "text", context: "json" } as const;
+const EVENT_COLUMNS = { i: "integer", schema_id: "text", id: "text", labeler: "text", at_ms: "double", unit: "text", tags: "json", signals: "json", probability: "text", text: "text", context: "json", part: "text" } as const;
 
-export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, maxParams = dialect.maxParams }: SqlStoreOptions): SqlStore => {
-  const tables = tablesOf(table);
+export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, maxParams = dialect.maxParams, partition }: SqlStoreOptions): SqlStore => {
+  const tables = tablesOf(table, partition);
   let last: Promise<unknown> = Promise.resolve();
   const query: Query = dialect.serial
     ? (sql, params) => {
@@ -157,14 +171,14 @@ export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, m
       }
     : given;
   const { events, changes, state } = tables;
-  const run = async (sql: string, params: Params | unknown[] = []): Promise<ReadonlyArray<Record<string, unknown>>> => {
+  const run = async (sql: string, params: Params | SqlValue[] = []): Promise<ReadonlyArray<Record<string, unknown>>> => {
     const values = Array.isArray(params) ? params : params.values;
     const ready = dialect.finish ? dialect.finish(sql, values) : { sql, params: values };
     return (await query(ready.sql, ready.params)).rows;
   };
 
   /** `where` as conditions on the events table `e`. */
-  const tagged = (params: Params, where: TagFilter): string[] => Object.entries(where).map(([key, value]) => `${dialect.text("e.tags", params.key(key))} = ${params.text(value)}`);
+  const tagged = (params: Params, where: TagFilter): string[] => Object.entries(where).map(([key, value]) => `${key === partition ? "e.part" : dialect.text("e.tags", params.key(key))} = ${params.text(value)}`);
   /** All of `filter`'s tags at once, as 1 or 0. */
   const matches = (params: Params, filter: TagFilter): string => {
     const conditions = tagged(params, filter);
@@ -189,8 +203,7 @@ export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, m
 
   const countOnce = async (query: CountQuery): Promise<CountRow[]> => {
     const params = paramsOf(dialect);
-    // Each part of each signal worked out once, as one bit of a mask (60 to a column, so a row
-    // stays narrow to sort); a signal is yes when all its parts' bits are.
+    // Each signal part is one bit of a mask, 60 to a column, so the rows sorted per customer stay narrow.
     const parts = new Map<string, number>();
     const partsOf = (signal: string): number[] =>
       signal.split("&").map((key) => {
@@ -216,10 +229,7 @@ export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, m
     const groupColumns = !groupBy ? [] : "tags" in groupBy ? groupBy.tags.map((key, n) => `${dialect.text("e.tags", params.key(key))} AS g${n}`) : [`${dialect.without("e.tags", groupBy.tagsExcept, params.add)} AS g0`];
     const groups = groupColumns.map((_, n) => `g${n}`);
     const conditions = [...answers(params, query), ...(query.where ? tagged(params, query.where) : []), ...(query.exclude ? [`${matches(params, query.exclude)} = 0`] : [])];
-    // Each event in reach is read once and its signal parts worked out once, then placed in every
-    // window that holds it. Back-to-back windows of one length (a baseline's stretches, an onset's
-    // hours) are a run, and an event finds its window in a run by arithmetic, not by comparing it
-    // with every window.
+    // Each event in reach is read once, then placed in the windows that hold it (see `runsOf`).
     const { runs, places } = runsOf(query.windows);
     if (runs.length === 0) {
       return countedNothing(query);
@@ -288,7 +298,7 @@ export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, m
       const seen = new Set<string>();
       const fresh = added.filter((event) => !seen.has(eventKey(event)) && seen.add(eventKey(event)));
       for (let start = 0; start < fresh.length; start += batch) {
-        const rows = fresh.slice(start, start + batch).map((event, i) => ({ i, schema_id: event.schema, id: event.id, labeler: event.labeler, at_ms: event.at, unit: event.unit ?? null, tags: event.tags ? sortedTags(event.tags) : null, signals: event.signals, probability: event.probability, text: event.text ?? null, context: event.context ?? null }));
+        const rows = fresh.slice(start, start + batch).map((event, i) => ({ i, schema_id: event.schema, id: event.id, labeler: event.labeler, at_ms: event.at, unit: event.unit ?? null, tags: event.tags ? sortedTags(event.tags) : null, signals: event.signals, probability: event.probability, text: event.text ?? null, context: event.context ?? null, part: partition === undefined ? null : (event.tags?.[partition] ?? null) }));
         const params = paramsOf(dialect);
         const source = dialect.rows(params.add(JSON.stringify(rows)), "x", EVENT_COLUMNS);
         const columns = Object.keys(EVENT_COLUMNS).filter((column) => column !== "i");
@@ -321,10 +331,12 @@ export const sqlStore = (dialect: Dialect, { query: given, table, batch = 500, m
       const rule = query.labeler === undefined ? query.oneAnswer : undefined;
       const firstCopy = (column: "at_ms" | "seq"): string =>
         `(SELECT o.${column} FROM ${events} o WHERE o.schema_id = e.schema_id AND o.id = e.id AND o.at_ms >= ${params.number(rule!.from)} AND o.at_ms < ${params.number(rule!.to)} ORDER BY o.at_ms, o.seq LIMIT 1)`;
-      const ranks = rule ? `${firstCopy("at_ms")} AS rank_at, ${firstCopy("seq")} AS rank_seq` : "0 AS rank_at, e.seq AS rank_seq";
+      // Without one answer per event, time and the order stored are the index's order, so a cut-short read stops early.
+      const ranks = rule ? `${firstCopy("at_ms")} AS rank_at, ${firstCopy("seq")} AS rank_seq` : "e.seq AS rank_seq";
+      const tie = rule ? ["rank_at", "rank_seq"] : ["rank_seq"];
       const order = query.order ?? "oldest";
       const surest = typeof order === "object" ? `${dialect.least(order.surest.map((key) => `COALESCE(${dialect.number("e.signals", params.key(key))}, 0)`))} AS sureness, ` : "";
-      const by = typeof order === "object" ? "sureness DESC, at_ms DESC, rank_at, rank_seq" : order === "newest" ? "at_ms DESC, rank_at DESC, rank_seq DESC" : "at_ms, rank_at, rank_seq";
+      const by = typeof order === "object" ? `sureness DESC, at_ms DESC, ${tie.join(", ")}` : order === "newest" ? `at_ms DESC, ${tie.map((column) => `${column} DESC`).join(", ")}` : `at_ms, ${tie.join(", ")}`;
       const inner = `SELECT e.schema_id, e.id, e.labeler, e.at_ms, e.unit, e.tags, e.signals, e.probability, e.text, e.context, ${surest}${ranks} FROM ${events} e WHERE ${conditions.length === 0 ? "1 = 1" : conditions.join(" AND ")}`;
       const picked = query.onePerUnit ? `SELECT * FROM (SELECT x.*, ROW_NUMBER() OVER (PARTITION BY COALESCE(x.unit, x.id) ORDER BY ${by}) AS place FROM (${inner}) x) y WHERE place = 1` : `SELECT * FROM (${inner}) y`;
       const limit = query.limit === undefined ? "" : ` LIMIT ${params.add(Math.floor(query.limit))}`;

@@ -16,8 +16,8 @@ const skip = db ? false : "@electric-sql/pglite isn't installed: run npm install
 
 checkSqlStore(
   "postgresStore",
-  async (table) => {
-    const store = postgresStore({ query: (sql, params) => db.query(sql, params), table });
+  async (table, partition) => {
+    const store = postgresStore({ query: (sql, params) => db.query(sql, params), table, ...(partition ? { partition } : {}) });
     await store.migrate();
     return store;
   },

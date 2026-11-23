@@ -11,12 +11,16 @@ import { support } from "../../examples/support/schema.ts";
 import { countEvents, createWatch, DAY, exposureMonitor, HOUR, memoryStore, silenceMonitor } from "../index.ts";
 import { seeded, storeContract } from "../testing.ts";
 
-/** `make(table)` gives a migrated store on tables of that name; each call a new name. */
+/** `make(table, partition?)` gives a migrated store on tables of that name; each call a new name. */
 export const checkSqlStore = (name, make, { skip = false } = {}) => {
   let n = 0;
   const fresh = () => make(`t${(n += 1)}`);
   for (const { name: check, run } of storeContract(fresh)) {
     test(`${name}: ${check}`, { skip }, run);
+  }
+  // Split by a tag the random histories filter on: its column must find exactly what the tag does.
+  for (const { name: check, run } of storeContract(() => make(`p${(n += 1)}`, "platform")).filter((check) => check.name.includes("random histories"))) {
+    test(`${name} split by platform: ${check}`, { skip }, run);
   }
 
   test(`${name}: keys, tags and values that would break SQL are only ever data`, { skip }, async () => {
