@@ -1,7 +1,8 @@
 // The built-in monitor kinds. Each is a plain object that satisfies `Monitor`; write your own the
 // same way.
 import { exposureOf } from "./changes.ts";
-import { count, countUnits, EVERY, wholeStretches } from "./metrics.ts";
+import { countsOf } from "./counting.ts";
+import { EVERY, wholeStretches } from "./metrics.ts";
 import type { Monitor, Severity } from "./monitor.ts";
 import { compareRates } from "./stats.ts";
 import type { Counts } from "./stats.ts";
@@ -73,7 +74,6 @@ export const shareMonitor = ({ signal, windowMs, baseline = { kind: "trailing", 
   if (!(windowMs > 0)) {
     throw new Error(`A share monitor's window must be longer than nothing: ${windowMs}`);
   }
-  const tally = per === "unit" ? countUnits : count;
   return {
     name: name ?? `${spanLabel(windowMs)} share of ${signal}${tagLabel(where)}${baseline.kind === "seasonal" ? " (seasonal)" : ""}`,
     severity,
@@ -83,16 +83,17 @@ export const shareMonitor = ({ signal, windowMs, baseline = { kind: "trailing", 
     lookbackMs: windowMs + (baseline.kind === "trailing" ? reachOf(baseline.spanMs, windowMs) : baseline.cycles * baseline.periodMs),
     tested: true,
     ...(alpha === undefined ? {} : { alpha }),
-    check: (view, now, { alpha: cutoff, excluded, gates }) => {
-      const current = tally(view.within({ from: now - windowMs, to: now, where }), signal, gates);
+    check: async (reader, now, { alpha: cutoff, excluded, gates }) => {
       // The baseline is counted the way the window is: in whole stretches the window's length,
       // each customer once per stretch. Counted once over a whole week, an account that writes
       // every day would look far more likely to say yes than it does in any one window.
+      const stretches = baselineStretches(baseline, now, windowMs, excluded, (await reader.firstAt()) ?? now);
+      const [window, ...rest] = await reader.count({ windows: [{ from: now - windowMs, to: now }, ...stretches], signals: [signal], gates, per, ...(where ? { where } : {}) });
+      const current = countsOf(window, signal);
       const base = { yes: 0, total: 0 };
-      for (const stretch of baselineStretches(baseline, now, windowMs, excluded, view.events[0]?.at ?? now)) {
-        const counted = tally(view.within({ ...stretch, where }), signal, gates);
-        base.yes += counted.yes;
-        base.total += counted.total;
+      for (const row of rest) {
+        base.yes += row.yes[signal]!;
+        base.total += row.total;
       }
       const detail = { now: `${current.yes}/${current.total}`, baseline: `${base.yes}/${base.total}` };
       if (current.total === 0 || base.total < minBaseline) {
@@ -131,11 +132,9 @@ export const eventMonitor = ({ signal, gate = 0.9, second, lateMs = 6 * HOUR, se
   windowMs: 0,
   lookbackMs: lateMs,
   tested: false,
-  check: (view, now, { since }) => {
-    const hits = view.within({ from: since - lateMs, to: now }).filter((event) => {
-      const p = event.signals[signal] ?? 0;
-      return p >= gate || (second !== undefined && p >= second.from && (event.signals[`${signal}.second`] ?? 0) >= (second.gate ?? 0.5));
-    });
+  check: async (reader, now, { since }) => {
+    // Read where they are kept: only the events at or above a cutoff come back.
+    const hits = await reader.events({ from: since - lateMs, to: now, atLeast: [{ [signal]: gate }, ...(second ? [{ [signal]: second.from, [`${signal}.second`]: second.gate ?? 0.5 }] : [])] });
     return { state: hits.length > 0 ? "firing" : "ok", detail: {}, events: hits.map((event) => ({ id: event.id, at: event.at, detail: { p: event.signals[signal] ?? 0 } })) };
   },
 });
@@ -161,11 +160,11 @@ export const exposureMonitor = ({ change, signal, forMs = WEEK, minCount = 3, se
     lookbackMs: forMs + WEEK,
     tested: true,
     ...(alpha === undefined ? {} : { alpha }),
-    check: (view, now, { alpha: cutoff, gates }) => {
+    check: async (reader, now, { alpha: cutoff, gates }) => {
       if (now < change.at || now > change.at + forMs) {
         return { state: "ok", detail: {} };
       }
-      const found = exposureOf(view, change, { signal, gates, until: now });
+      const found = await exposureOf(reader, change, { signal, gates, until: now });
       if (!found) {
         return { state: "ok", detail: {} };
       }
@@ -195,9 +194,8 @@ export const volumeMonitor = ({ windowMs, factor = 2, minCount = 20, periodMs = 
   windowMs,
   lookbackMs: periodMs + windowMs,
   tested: false,
-  check: (view, now) => {
-    const current = view.within({ from: now - windowMs, to: now }).length;
-    const before = view.within({ from: now - periodMs - windowMs, to: now - periodMs }).length;
+  check: async (reader, now) => {
+    const [current, before] = (await reader.count({ windows: [{ from: now - windowMs, to: now }, { from: now - periodMs - windowMs, to: now - periodMs }], signals: [], per: "event" })).map((row) => row.total) as [number, number];
     return { state: current >= minCount && current > factor * Math.max(before, 1) ? "firing" : "ok", detail: { now: current, before } };
   },
 });
@@ -214,9 +212,8 @@ export const silenceMonitor = ({ windowMs, minBefore = 5, periodMs = WEEK, sever
   windowMs,
   lookbackMs: periodMs + windowMs,
   tested: false,
-  check: (view, now) => {
-    const current = view.within({ from: now - windowMs, to: now }).length;
-    const before = view.within({ from: now - periodMs - windowMs, to: now - periodMs }).length;
+  check: async (reader, now) => {
+    const [current, before] = (await reader.count({ windows: [{ from: now - windowMs, to: now }, { from: now - periodMs - windowMs, to: now - periodMs }], signals: [], per: "event" })).map((row) => row.total) as [number, number];
     return { state: current === 0 && before >= minBefore ? "firing" : "ok", detail: { now: current, before } };
   },
 });

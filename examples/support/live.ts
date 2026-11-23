@@ -2,7 +2,7 @@
 // Needs AI_GATEWAY_API_KEY.
 //
 //   node examples/support/live.ts
-import { backtestQuestion, chatLabeler, createPipeline, DAY, decisionLabeler, groupAlerts, HOUR, investigate, memoryStore, openAiChat, replay, suspectsFor, toolsFor, viewOf, yesNo } from "../../src/index.ts";
+import { backtestQuestion, chatLabeler, createPipeline, DAY, decisionLabeler, groupAlerts, HOUR, investigate, memoryReader, memoryStore, openAiChat, replay, suspectsFor, toolsFor, yesNo } from "../../src/index.ts";
 import type { Notice, TextEvent } from "../../src/index.ts";
 import { loadInbox } from "./data.ts";
 import { supportMonitors } from "./monitors.ts";
@@ -70,15 +70,17 @@ const group = groupAlerts(alerts).find((g) => g.severity === "page" && g.alerts.
 if (!group) {
   throw new Error("No page was raised for the invoice bug");
 }
-const view = viewOf(inbox.events.filter((event) => event.at < group.lastAt));
+const reader = memoryReader(inbox.events.filter((event) => event.at < group.lastAt));
 const changes = inbox.changes.filter((change) => change.at < group.lastAt);
-const leads = group.alerts.map((alert): Notice => {
-  const behind = suspectsFor(alert, view, changes, { gates: support.gates });
-  return { id: `${alert.id}#fired`, kind: "fired", at: alert.at, alert, ...(behind ? { suspects: behind.ranked.slice(0, 3), confident: behind.confident } : {}) };
-});
+const leads = await Promise.all(
+  group.alerts.map(async (alert): Promise<Notice> => {
+    const behind = await suspectsFor(alert, reader, changes, { gates: support.gates });
+    return { id: `${alert.id}#fired`, kind: "fired", at: alert.at, alert, ...(behind ? { suspects: behind.ranked.slice(0, 3), confident: behind.confident } : {}) };
+  }),
+);
 const { report, steps, cost } = await investigate(group, {
   chat: openAiChat({ model: "anthropic/claude-sonnet-5.5", apiKey, baseUrl: "https://ai-gateway.vercel.sh/v1" }),
-  tools: toolsFor({ view, changes }, { signals: support.signals, gates: support.gates }),
+  tools: toolsFor({ reader, changes }, { signals: support.signals, gates: support.gates }),
   about: "the support inbox of Acme, software for home-service businesses",
   leads,
 });

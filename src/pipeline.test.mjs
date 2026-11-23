@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactBasics } from "./labeler.ts";
 import { ruleLabeler } from "./labelers/rules.ts";
-import { eventMonitor, shareMonitor } from "./monitors.ts";
+import { eventMonitor, shareMonitor, shareMonitors, silenceMonitor, volumeMonitor } from "./monitors.ts";
 import { createPipeline, createWatch } from "./pipeline.ts";
 import { defineSchema, yesNo } from "./schema.ts";
 import { memoryStore } from "./store.ts";
-import { stream } from "./testing.ts";
+import { seeded, stream } from "./testing.ts";
 import { DAY, HOUR } from "./types.ts";
 
 const schema = defineSchema({ name: "t", questions: { bug: yesNo("Broken?") } });
@@ -258,14 +258,22 @@ test("history labeled again by a second labeler isn't counted twice", async () =
   const again = events.map((event) => ({ ...event, labeler: "newer@2" }));
   const store = memoryStore({ events: [...events, ...again] });
   const seen = [];
-  const spy = { name: "spy", severity: "digest", windowMs: 0, lookbackMs: DAY, tested: false, check: (view) => (seen.push(view.events.map((e) => e.labeler)), { state: "ok", detail: {} }) };
+  const read = async (reader, now) => {
+    const range = { from: now - 10 * DAY, to: now };
+    const [counted] = await reader.count({ windows: [range], signals: ["bug"], per: "event" });
+    return { labelers: (await reader.events(range)).map((e) => e.labeler), total: counted.total };
+  };
+  const spy = { name: "spy", severity: "digest", windowMs: 0, lookbackMs: DAY, tested: false, check: async (reader, now) => (seen.push(await read(reader, now)), { state: "ok", detail: {} }) };
   const tick = await createWatch({ schema, store, monitors: [spy] }).tick(START);
-  assert.deepEqual(tick.mixedLabelers.sort(), ["newer@2", "test-labeler@1"]);
-  assert.equal(seen[0].length, events.filter((e) => e.at < START && e.at >= START - 10 * DAY).length);
+  assert.deepEqual(tick.mixedLabelers, ["test-labeler@1", "newer@2"]);
+  const once = events.filter((e) => e.at < START && e.at >= START - 10 * DAY).length;
+  assert.deepEqual([seen[0].labelers.length, seen[0].total], [once, once]);
+  // The labeler behind the newest event is the one whose answers count.
+  assert.deepEqual([...new Set(seen[0].labelers)], ["newer@2"]);
   // Asked for one labeler, it reads only that one and has nothing to warn about.
   const pinned = await createWatch({ schema, store, monitors: [spy], labeler: "test-labeler@1", stateKey: "pinned" }).tick(START);
   assert.equal(pinned.mixedLabelers, undefined);
-  assert.equal(new Set(seen[1]).size, 1);
+  assert.deepEqual([[...new Set(seen[1].labelers)], seen[1].total], [["test-labeler@1"], once]);
 });
 
 test("a confirmed incident is left out of later baselines, across restarts; cutoffs can be read", async () => {
@@ -361,4 +369,59 @@ test("onBatch shows a worker each batch and what failed in it, for a source that
   released = false;
   await assert.rejects(pipeline.run(queue(), { batch: 2, onBatch: () => Promise.reject(new Error("the queue is gone")) }), /the queue is gone/);
   assert.equal(released, true);
+});
+
+test("a tick reads no events in bulk: every read is cut short or filtered, and what comes back is what the notices quote", async () => {
+  // Seventeen days at 200 an hour, a customer on most events, a rise at the end and a few leaks.
+  const random = seeded(3);
+  const end = 17 * DAY;
+  const history = stream({ start: 0, hours: 17 * 24, perHour: 200, schema: schema.id, random, signals: { bug: (at) => (at >= end - 3 * HOUR ? 0.4 : 0.05), leak: (at) => (at >= end - 2 * HOUR ? 0.01 : 0) } }).map((event) => ({ ...event, unit: `acct-${Math.floor(random() * 3000)}` }));
+  const inner = memoryStore({ events: history });
+  await inner.recordChange({ id: "deploy", at: end - 4 * HOUR, kind: "deploy", what: "api deploy" });
+  const reads = [];
+  const counts = [];
+  const spy = {
+    ...inner,
+    events: async (query) => {
+      const out = await inner.events(query);
+      reads.push({ query, returned: out.length });
+      return out;
+    },
+    count: async (query) => (counts.push(query), inner.count(query)),
+  };
+  const monitors = [...shareMonitors({ signals: ["bug", "leak"] }), eventMonitor({ signal: "leak" }), volumeMonitor({ windowMs: 3 * HOUR }), silenceMonitor({ windowMs: 3 * HOUR })];
+  const tick = await createWatch({ schema, store: spy, monitors }).tick(end);
+  const hits = tick.fired.filter((alert) => alert.event).length;
+  const shares = tick.fired.filter((alert) => !alert.event).length;
+  assert.ok(hits > 0 && shares > 0, JSON.stringify(tick.fired.map((alert) => alert.monitor)));
+  for (const { query } of reads) {
+    assert.ok(query.limit !== undefined || query.atLeast !== undefined || query.to - query.from <= 1, JSON.stringify(query));
+  }
+  // The first event (for baselines), the one-event monitor's hits, and three examples per share alert.
+  const returned = reads.reduce((sum, read) => sum + read.returned, 0);
+  assert.ok(returned <= 1 + hits + hits + 3 * shares, `${returned} events read for ${hits} hits and ${shares} share alerts`);
+  // Ten monitors and three onsets asked for counts; they reached the store as a handful of queries.
+  assert.ok(counts.length <= 5, `${counts.length} counts`);
+  assert.ok(history.length > 80_000);
+});
+
+test("a watch scoped to one workspace of a shared store sees only that workspace, as if the store held nothing else", async () => {
+  // Two workspaces in one store; only the first has the incident, and only the second was relabeled.
+  const first = incident(10).map((event) => ({ ...event, id: `a-${event.id}`, tags: { workspace: "a" } }));
+  const second = stream({ start: 0, hours: 10 * 24, perHour: 20, schema: schema.id, prefix: "b-", signals: { bug: 0.05 } }).map((event) => ({ ...event, tags: { workspace: "b" } }));
+  const store = memoryStore({ events: [...first, ...second, ...second.map((event) => ({ ...event, labeler: "newer@2" }))] });
+  const watchOf = (workspace) => createWatch({ schema, store, monitors: [share()], where: { workspace }, stateKey: `watch:t:${workspace}` });
+  const at = START + 3 * HOUR;
+  const [a, b] = [await watchOf("a").tick(at), await watchOf("b").tick(at)];
+  assert.deepEqual(a.fired.map((alert) => alert.monitor), ["3h share of bug"]);
+  assert.deepEqual(b.fired, []);
+  assert.equal(a.notices[0].examples.every((example) => example.id.startsWith("a-")), true);
+  // Each has its own labelers to warn about, and its own state.
+  assert.deepEqual([a.mixedLabelers, b.mixedLabelers], [undefined, ["test-labeler@1", "newer@2"]]);
+  assert.ok((await store.loadState("watch:t:a")).runner.open["3h share of bug"]);
+  assert.deepEqual((await store.loadState("watch:t:b")).runner.open, {});
+  // Unscoped, it counts both workspaces.
+  const whole = await createWatch({ schema, store, monitors: [share()], stateKey: "whole" }).tick(at);
+  const total = (tick) => Number(tick.fired[0].detail.now.split("/")[1]);
+  assert.equal(total(whole), 2 * total(a));
 });

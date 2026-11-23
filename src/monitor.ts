@@ -2,8 +2,8 @@
 // The runner asks every monitor at each tick, keeps false alerts within a weekly budget, raises
 // one alert per episode, and mutes what a planned change predicted. Implement `Monitor` to add a
 // new kind; the built-in kinds are in monitors.ts.
-import { viewOf } from "./metrics.ts";
-import type { EventView } from "./metrics.ts";
+import { memoryReader } from "./reader.ts";
+import type { Reader } from "./reader.ts";
 import { alphaFor } from "./stats.ts";
 import { DAY, HOUR, WEEK } from "./types.ts";
 import type { Change, Gates, Interval, LabeledEvent, TagFilter } from "./types.ts";
@@ -49,8 +49,11 @@ export interface Monitor {
   readonly tested: boolean;
   /** A fixed cutoff, for a tested monitor that should not take its share of the budget. */
   readonly alpha?: number;
-  /** May return a promise, so a monitor of your own can ask a database instead of reading the view. */
-  check(view: EventView, now: number, context: CheckContext): CheckResult | Promise<CheckResult>;
+  /**
+   * Reads through `reader`: counts where the events are kept, and events in small bounded
+   * amounts. The checks of one tick run together, and their counts go to the store together.
+   */
+  check(reader: Reader, now: number, context: CheckContext): CheckResult | Promise<CheckResult>;
 }
 
 export interface Alert {
@@ -116,7 +119,7 @@ export interface Tick {
 }
 
 export interface Runner {
-  tick(view: EventView, now: number, changes?: readonly Change[]): Promise<Tick>;
+  tick(reader: Reader, now: number, changes?: readonly Change[]): Promise<Tick>;
   /** The cutoff a monitor is held to. */
   alphaOf(monitor: Monitor): number;
   /** Leaves a stretch out of every baseline from now on: an incident someone confirmed. */
@@ -152,7 +155,7 @@ export const createRunner = ({ monitors, gates = {}, stepMs = HOUR, budget = {},
       excluded.push(interval);
     },
     snapshot: () => ({ since, open: Object.fromEntries(open), excluded: [...excluded, ...ownStretch.values()], alerted: Object.fromEntries(alerted) }),
-    tick: async (view, now, changes = []) => {
+    tick: async (reader, now, changes = []) => {
       const planned = changes.filter((change) => change.expect !== undefined).map((change) => ({ change, from: change.at, to: change.at + change.expect!.forMs }));
       const context = { since: since ?? now - stepMs, excluded: [...excluded, ...ownStretch.values(), ...planned], gates, changes };
       const tick: Tick = { fired: [], resolved: [], noData: [] };
@@ -177,8 +180,10 @@ export const createRunner = ({ monitors, gates = {}, stepMs = HOUR, budget = {},
         tick.fired.push(raised);
         return raised;
       };
-      for (const monitor of monitors) {
-        const result = await monitor.check(view, now, { ...context, alpha: alphaOf(monitor) });
+      // Asked together, so the counts they need reach the store as a few queries, not one each.
+      const results = await Promise.all(monitors.map((monitor) => monitor.check(reader, now, { ...context, alpha: alphaOf(monitor) })));
+      for (const [i, monitor] of monitors.entries()) {
+        const result = results[i]!;
         if (result.state === "no_data") {
           // Not knowing is not the same as being clear: an open episode stays open, and time
           // without data doesn't count toward ending it.
@@ -273,13 +278,13 @@ export const groupAlerts = (alerts: readonly Alert[], { pageGapMs = 4 * HOUR, di
 /** Runs the monitors over history, one tick per step: every alert they would have raised. */
 export const replay = async (options: RunnerOptions, events: readonly LabeledEvent[], { from, to, changes = [] }: { from: number; to: number; changes?: readonly Change[] }): Promise<{ alerts: Alert[]; resolved: Alert[]; groups: AlertGroup[] }> => {
   const runner = createRunner({ ...options, snapshot: { since: from, open: {}, excluded: options.snapshot?.excluded ?? [], alerted: {} } });
-  const view = viewOf(events);
+  const reader = memoryReader(events);
   const step = options.stepMs ?? HOUR;
   const alerts: Alert[] = [];
   const resolved: Alert[] = [];
   for (let now = from + step; now <= to; now += step) {
     // A change is only known once it has happened.
-    const tick = await runner.tick(view, now, changes.filter((change) => change.at <= now));
+    const tick = await runner.tick(reader, now, changes.filter((change) => change.at <= now));
     alerts.push(...tick.fired);
     resolved.push(...tick.resolved);
   }

@@ -4,6 +4,7 @@
 import { labelAll } from "./labeler.ts";
 import type { LabelFailure, LabelOptions, Labeler } from "./labeler.ts";
 import { count, series, viewOf } from "./metrics.ts";
+import { memoryReader } from "./reader.ts";
 import { replay } from "./monitor.ts";
 import type { Alert, AlertGroup, RunnerOptions } from "./monitor.ts";
 import { defineSchema, parseSignal } from "./schema.ts";
@@ -82,17 +83,20 @@ export const backtestQuestion = async ({ events, key, question, labeler, state, 
   const schema = defineSchema({ name: `backtest-${key}`, questions: { [key]: question }, ...(state ? { state } : {}) });
   const result = await relabel(events, schema, labeler, options);
   const view = viewOf(result.events);
+  const reader = memoryReader(result.events);
   const from = view.events[0]?.at ?? 0;
   const to = (view.events.at(-1)?.at ?? 0) + 1;
   return {
     schema,
     ...result,
-    signals: schema.signals.map((signal) => ({
-      signal,
-      counts: count(view.events, signal, schema.gates),
-      byBucket: series(view, { signal, gates: schema.gates, from, to, bucketMs }),
-      surest: [...view.events].sort((a, b) => (b.signals[signal] ?? 0) - (a.signals[signal] ?? 0)).slice(0, examples),
-    })),
+    signals: await Promise.all(
+      schema.signals.map(async (signal) => ({
+        signal,
+        counts: count(view.events, signal, schema.gates),
+        byBucket: await series(reader, { signal, gates: schema.gates, from, to, bucketMs }),
+        surest: [...view.events].sort((a, b) => (b.signals[signal] ?? 0) - (a.signals[signal] ?? 0)).slice(0, examples),
+      })),
+    ),
   };
 };
 

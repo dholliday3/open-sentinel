@@ -6,15 +6,16 @@ import { suspectsFor } from "./changes.ts";
 import type { Suspect } from "./changes.ts";
 import { labelAll } from "./labeler.ts";
 import type { LabelFailure, LabelOptions, Labeler } from "./labeler.ts";
-import { EVERY, latestAnswers, on, viewOf } from "./metrics.ts";
-import type { EventView } from "./metrics.ts";
+import { atLeastOf, EVERY } from "./metrics.ts";
 import { createRunner } from "./monitor.ts";
 import type { Alert, Runner, RunnerOptions, RunnerSnapshot, Tick } from "./monitor.ts";
+import { storeReader } from "./reader.ts";
+import type { Reader } from "./reader.ts";
 import { describeSignal, parseSignal } from "./schema.ts";
 import type { Schema } from "./schema.ts";
 import type { Store } from "./store.ts";
 import { DAY, HOUR } from "./types.ts";
-import type { Gates, Interval, Json, LabeledEvent, TextEvent } from "./types.ts";
+import type { Gates, Interval, Json, LabeledEvent, TagFilter, TextEvent } from "./types.ts";
 
 /** Anything that yields events to label: an array, a generator reading a queue, a file reader. */
 export type Source = Iterable<TextEvent> | AsyncIterable<TextEvent>;
@@ -50,31 +51,22 @@ export interface Notice {
   confident?: boolean;
 }
 
-/** The messages behind an alert, for a notice: see `Notice.examples`. */
-const examplesOf = (alert: Alert, view: EventView, gates: Gates, limit: number): Example[] => {
+/** The messages behind an alert, for a notice: see `Notice.examples`. Read where they are kept, at most `limit` of them. */
+const examplesOf = async (alert: Alert, reader: Reader, gates: Gates, limit: number): Promise<Example[]> => {
   const asExample = ({ id, at, text }: LabeledEvent): Example => ({ id, at, ...(text === undefined ? {} : { text }) });
+  if (limit <= 0) {
+    return [];
+  }
   if (alert.event) {
     const { id, at } = alert.event;
-    return view.within({ from: at, to: at + 1 }).filter((event) => event.id === id).slice(0, limit).map(asExample);
+    return (await reader.events({ from: at, to: at + 1 })).filter((event) => event.id === id).slice(0, limit).map(asExample);
   }
-  if (alert.signal === undefined || alert.signal === EVERY || limit <= 0) {
+  if (alert.signal === undefined || alert.signal === EVERY) {
     return [];
   }
   const keys = parseSignal(alert.signal).map((part) => part.key);
-  const sureness = (event: LabeledEvent): number => Math.min(...keys.map((key) => event.signals[key] ?? 0));
-  const customers = new Set<string>();
-  return view
-    .within({ from: alert.at - alert.windowMs, to: alert.at, where: alert.where })
-    .filter(on(alert.signal, gates))
-    .sort((a, b) => sureness(b) - sureness(a) || b.at - a.at)
-    .filter((event) => {
-      const who = event.unit ?? event.id;
-      const first = !customers.has(who);
-      customers.add(who);
-      return first;
-    })
-    .slice(0, limit)
-    .map(asExample);
+  const surest = await reader.events({ from: alert.at - alert.windowMs, to: alert.at, ...(alert.where ? { where: alert.where } : {}), atLeast: atLeastOf(alert.signal, gates)!, order: { surest: keys }, onePerUnit: true, limit });
+  return surest.map(asExample);
 };
 
 /**
@@ -279,6 +271,12 @@ export interface WatchOptions extends Omit<RunnerOptions, "snapshot"> {
   maxPending?: number;
   /** How many messages a fired notice quotes (`Notice.examples`). 0 keeps message text out of notices. */
   examples?: number;
+  /**
+   * Watch only events carrying these tags, as if the store held nothing else: one workspace of
+   * a store shared by many. Give each such watch its own `stateKey`. Each has its own alarm
+   * budget, so a hundred workspaces can raise a hundred times the false alerts of one.
+   */
+  where?: TagFilter;
 }
 
 export interface WatchTick extends Tick {
@@ -304,11 +302,10 @@ export interface Watch {
  * in the store, so a process that starts fresh for every tick carries on where the last one left
  * off. Delivery is at least once: a notice is on record before it is sent.
  *
- * It reads every event the monitors look back over on each tick. That is fine for the tens of
- * thousands of events a week this was built on; for a stream much larger than that, write
- * monitors whose `check` asks your database for counts instead of reading the view.
+ * A tick reads no events in bulk. Monitors count through the store (`Store.count`); what a tick
+ * reads out is the events a one-event monitor alerts on and the few a notice quotes.
  */
-export const createWatch = ({ schema, store, sinks = [], labeler, suspectLookbackMs = 10 * DAY, stateKey = `watch:${schema.name}`, maxPending = 1000, examples = 3, ...options }: WatchOptions): Watch => {
+export const createWatch = ({ schema, store, sinks = [], labeler, suspectLookbackMs = 10 * DAY, stateKey = `watch:${schema.name}`, maxPending = 1000, examples = 3, where, ...options }: WatchOptions): Watch => {
   const gates = { ...schema.gates, ...options.gates };
   const lookback = Math.max(suspectLookbackMs, options.stepMs ?? HOUR, ...options.monitors.map((monitor) => monitor.lookbackMs));
   // Built now so a mistake in the monitors (two with one name) fails here, not on the first tick.
@@ -335,20 +332,22 @@ export const createWatch = ({ schema, store, sinks = [], labeler, suspectLookbac
     },
     tick: async (now = Date.now()) => {
       const { runner, outbox } = await load();
-      const stored = await store.events({ from: now - lookback, to: now, schema: schema.id, ...(labeler === undefined ? {} : { labeler }) });
-      const labelers = [...new Set(stored.map((event) => event.labeler))];
-      const view = viewOf(latestAnswers(stored));
+      const reader = storeReader(store, { schema: schema.id, span: { from: now - lookback, to: now }, ...(labeler === undefined ? {} : { labeler }), ...(where ? { where } : {}) });
       const changes = await store.changes({ from: now - lookback, to: now + 1 });
-      const tick = await runner.tick(view, now, changes);
+      const tick = await runner.tick(reader, now, changes);
       const about = (alert: Alert): Pick<Notice, "schema" | "question"> => ({ schema: schema.id, ...(alert.signal === undefined || alert.signal === EVERY ? {} : { question: describeSignal(schema, alert.signal) }) });
-      const notices: Notice[] = [
-        ...tick.fired
+      // Suspects and examples only for alerts that fired: a quiet tick reads nothing more.
+      const fired = await Promise.all(
+        tick.fired
           .filter((alert) => alert.mutedBy === undefined)
-          .map((alert): Notice => {
-            const behind = suspectsFor(alert, view, changes, { gates, lookbackMs: suspectLookbackMs });
-            const quoted = examplesOf(alert, view, gates, examples);
+          .map(async (alert): Promise<Notice> => {
+            const [behind, quoted] = await Promise.all([suspectsFor(alert, reader, changes, { gates, lookbackMs: suspectLookbackMs }), examplesOf(alert, reader, gates, examples)]);
             return { id: `${alert.id}#fired`, kind: "fired", at: alert.at, alert, ...about(alert), ...(quoted.length > 0 ? { examples: quoted } : {}), ...(behind && behind.ranked.length > 0 ? { suspects: behind.ranked.slice(0, 3), confident: behind.confident } : {}) };
           }),
+      );
+      const labelers = labeler === undefined ? await reader.labelers() : [];
+      const notices: Notice[] = [
+        ...fired,
         ...tick.resolved.filter((alert) => alert.mutedBy === undefined).map((alert): Notice => ({ id: `${alert.id}#resolved`, kind: "resolved", at: now, alert, ...about(alert) })),
       ];
       outbox.queue(notices);

@@ -1,4 +1,5 @@
 // Counting signals over events: the layer between labeled events and anything that watches them.
+import type { Reader } from "./reader.ts";
 import type { Counts } from "./stats.ts";
 import type { Gates, Interval, LabeledEvent, TagFilter } from "./types.ts";
 
@@ -9,7 +10,7 @@ export interface Range {
   where?: TagFilter;
 }
 
-/** Events sorted by time, with fast time-range reads. Monitors read a view, never a store. */
+/** Events sorted by time, with fast time-range reads. */
 export interface EventView {
   readonly events: readonly LabeledEvent[];
   /** Events with `from <= at < to`. */
@@ -62,6 +63,16 @@ export const hasTags =
   (event: LabeledEvent): boolean =>
     Object.entries(where).every(([key, value]) => event.tags?.[key] === value);
 
+/** Both filters at once, as one. Not possible when they ask one tag for two values. */
+export const allOf = (a: TagFilter | undefined, b: TagFilter | undefined): { possible: boolean; where?: TagFilter } => {
+  if (!a || !b) {
+    const where = a ?? b;
+    return { possible: true, ...(where ? { where } : {}) };
+  }
+  const possible = Object.entries(b).every(([key, value]) => !(key in a) || a[key] === value);
+  return { possible, ...(possible ? { where: { ...a, ...b } } : {}) };
+};
+
 /** The signal every event has. Counting it counts events, so a monitor on it watches volume. */
 export const EVERY = "*";
 
@@ -80,6 +91,13 @@ export const on = (signal: string, gates: Gates = {}): ((event: LabeledEvent) =>
   }
   return (event) => parts.every(([key, gate]) => (event.signals[key] ?? 0) >= gate);
 };
+
+/**
+ * The signal as an `atLeast` filter for a read (see `EventQuery`): every part at its gate.
+ * Undefined for `*`, which every event has.
+ */
+export const atLeastOf = (signal: string, gates: Gates = {}): Array<Record<string, number>> | undefined =>
+  signal === EVERY ? undefined : [Object.fromEntries(signal.split("&").map((key) => [key, gates[key] ?? 0.5]))];
 
 /** How many of these events have the signal, and how many there are. */
 export const count = (events: readonly LabeledEvent[], signal: string, gates: Gates = {}): Counts => {
@@ -153,38 +171,36 @@ export const wholeStretches = ({ end, lengthMs, count, earliest, excluded = [] }
 };
 
 /** One signal's counts in equal buckets of time. */
-export const series = (view: EventView, { signal, gates, from, to, bucketMs, where }: { signal: string; gates?: Gates; from: number; to: number; bucketMs: number; where?: TagFilter }): Array<Counts & { at: number }> => {
+export const series = async (reader: Reader, { signal, gates, from, to, bucketMs, where }: { signal: string; gates?: Gates; from: number; to: number; bucketMs: number; where?: TagFilter }): Promise<Array<Counts & { at: number }>> => {
   if (!(bucketMs > 0)) {
     throw new Error("A bucket must be longer than nothing");
   }
-  const out = [];
+  const windows: Interval[] = [];
   for (let at = from; at < to; at += bucketMs) {
-    out.push({ at, ...count(view.within({ from: at, to: Math.min(at + bucketMs, to), where }), signal, gates) });
+    windows.push({ from: at, to: Math.min(at + bucketMs, to) });
   }
-  return out;
+  const rows = await reader.count({ windows, signals: [signal], ...(gates ? { gates } : {}), per: "event", ...(where ? { where } : {}) });
+  return rows.map((row, i) => ({ at: windows[i]!.from, yes: row.yes[signal]!, total: row.total }));
 };
 
 /** One signal split by a tag: its counts in a window and in the span before it. */
-export const breakdown = (view: EventView, { signal, gates, by, from, to, baselineMs }: { signal: string; gates?: Gates; by: string; from: number; to: number; baselineMs: number }): Array<{ value: string | null; now: Counts; before: Counts }> => {
-  const now = view.within({ from, to });
-  const before = view.within({ from: from - baselineMs, to: from });
-  const values = [...new Set([...now, ...before].map((event) => event.tags?.[by] ?? null))];
-  return values
-    .map((value) => {
-      const withValue = (event: LabeledEvent): boolean => (event.tags?.[by] ?? null) === value;
-      return { value, now: count(now.filter(withValue), signal, gates), before: count(before.filter(withValue), signal, gates) };
-    })
-    .sort((a, b) => b.now.yes - a.now.yes);
+export const breakdown = async (reader: Reader, { signal, gates, by, from, to, baselineMs }: { signal: string; gates?: Gates; by: string; from: number; to: number; baselineMs: number }): Promise<Array<{ value: string | null; now: Counts; before: Counts }>> => {
+  const rows = await reader.count({ windows: [{ from, to }, { from: from - baselineMs, to: from }], signals: [signal], ...(gates ? { gates } : {}), per: "event", groupBy: { tags: [by] } });
+  const valueOf = (row: (typeof rows)[number]): string | null => row.group?.[by] ?? null;
+  const countsIn = (window: number, value: string | null): Counts => {
+    const row = rows.find((one) => one.window === window && valueOf(one) === value);
+    return { yes: row?.yes[signal] ?? 0, total: row?.total ?? 0 };
+  };
+  return [...new Set(rows.map(valueOf))].map((value) => ({ value, now: countsIn(0, value), before: countsIn(1, value) })).sort((a, b) => b.now.yes - a.now.yes);
 };
 
 /** Every signal's share in a window against the span before it, largest rise first. */
-export const movers = (view: EventView, { signals, gates, from, to, baselineMs }: { signals: readonly string[]; gates?: Gates; from: number; to: number; baselineMs: number }): Array<{ signal: string; now: Counts; before: Counts; lift: number }> => {
-  const now = view.within({ from, to });
-  const before = view.within({ from: from - baselineMs, to: from });
+export const movers = async (reader: Reader, { signals, gates, from, to, baselineMs }: { signals: readonly string[]; gates?: Gates; from: number; to: number; baselineMs: number }): Promise<Array<{ signal: string; now: Counts; before: Counts; lift: number }>> => {
+  const [now, before] = await reader.count({ windows: [{ from, to }, { from: from - baselineMs, to: from }], signals, ...(gates ? { gates } : {}), per: "event" });
   return signals
     .map((signal) => {
-      const a = count(now, signal, gates);
-      const b = count(before, signal, gates);
+      const a = { yes: now!.yes[signal]!, total: now!.total };
+      const b = { yes: before!.yes[signal]!, total: before!.total };
       // A floor on the earlier share keeps a signal that was absent from dividing by zero.
       return { signal, now: a, before: b, lift: a.yes / Math.max(a.total, 1) / Math.max(b.yes / Math.max(b.total, 1), 0.002) };
     })

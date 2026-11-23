@@ -4,13 +4,15 @@
 //   time      did the change land just before the shift began?
 // The third, whether the messages describe what the change touched, needs a reader: see
 // investigate.ts.
-import { count, countUnits, EVERY, hasTags, wholeStretches } from "./metrics.ts";
-import type { EventView } from "./metrics.ts";
+import { countsOf, groupKey } from "./counting.ts";
+import type { GroupBy } from "./counting.ts";
+import { allOf, EVERY, wholeStretches } from "./metrics.ts";
 import type { Alert } from "./monitor.ts";
+import type { Reader } from "./reader.ts";
 import { compareRates, logLik } from "./stats.ts";
 import type { Counts } from "./stats.ts";
 import { DAY, HOUR, WEEK } from "./types.ts";
-import type { Change, Gates, LabeledEvent, TagFilter } from "./types.ts";
+import type { Change, Gates, Interval, TagFilter } from "./types.ts";
 
 /** When a shift began, as far as the counts can say. */
 export interface Onset {
@@ -28,11 +30,13 @@ export interface Onset {
  * Finds when a signal's share stepped up: the split of the lookback that best explains the counts
  * as one rate before and a higher rate after. Null when no split shows a rise.
  */
-export const estimateOnset = (view: EventView, { signal, gates, where, until, lookbackMs, bucketMs = HOUR }: { signal: string; gates?: Gates; where?: TagFilter; until: number; lookbackMs: number; bucketMs?: number }): Onset | null => {
-  const buckets = [];
+export const estimateOnset = async (reader: Reader, { signal, gates, where, until, lookbackMs, bucketMs = HOUR }: { signal: string; gates?: Gates; where?: TagFilter; until: number; lookbackMs: number; bucketMs?: number }): Promise<Onset | null> => {
+  const windows: Interval[] = [];
   for (let at = until - lookbackMs; at < until; at += bucketMs) {
-    buckets.push({ at, ...count(view.within({ from: at, to: at + bucketMs, where }), signal, gates) });
+    windows.push({ from: at, to: at + bucketMs });
   }
+  const rows = windows.length === 0 ? [] : await reader.count({ windows, signals: [signal], ...(gates ? { gates } : {}), per: "event", ...(where ? { where } : {}) });
+  const buckets = rows.map((row, i) => ({ at: windows[i]!.from, ...countsOf(row, signal) }));
   const all = buckets.reduce((sum, b) => ({ yes: sum.yes + b.yes, total: sum.total + b.total }), { yes: 0, total: 0 });
   const splits = [];
   let left = { yes: 0, total: 0 };
@@ -85,15 +89,6 @@ export interface Exposure {
 /** Earlier events are "like" an exposed event when they share its other tags; fewer than this is too few to compare. */
 const MIN_EARLIER = 5;
 
-const kindsOf = (events: readonly LabeledEvent[], scoped: ReadonlySet<string>): Map<string, LabeledEvent[]> => {
-  const kinds = new Map<string, LabeledEvent[]>();
-  for (const event of events) {
-    const kind = JSON.stringify(Object.entries(event.tags ?? {}).filter(([key]) => !scoped.has(key)).sort(([a], [b]) => (a < b ? -1 : 1)));
-    kinds.set(kind, [...(kinds.get(kind) ?? []), event]);
-  }
-  return kinds;
-};
-
 /**
  * Compares the events a scoped change reached with the rest, and with their own kind before it.
  *
@@ -108,44 +103,54 @@ const kindsOf = (events: readonly LabeledEvent[], scoped: ReadonlySet<string>): 
  * events carry the scope's tags (a tester who had the flag early), there is too little to compare
  * with and the answer is that it can't say.
  */
-export const exposureOf = (view: EventView, change: Change, { signal, gates, where, until, baselineMs = WEEK }: { signal: string; gates?: Gates; where?: TagFilter; until: number; baselineMs?: number }): Exposure | null => {
+export const exposureOf = async (reader: Reader, change: Change, { signal, gates, where, until, baselineMs = WEEK }: { signal: string; gates?: Gates; where?: TagFilter; until: number; baselineMs?: number }): Promise<Exposure | null> => {
   if (!change.scope) {
     return null;
   }
-  const reached = hasTags(change.scope);
-  const scoped = new Set(Object.keys(change.scope));
-  const since = view.within({ from: change.at, to: until, where });
-  const after = since.filter(reached);
-  const exposed = countUnits(after, signal, gates);
-  const unexposed = countUnits(since.filter((event) => !reached(event)), signal, gates);
+  const { scope } = change;
+  const reached = allOf(where, scope);
+  // "Like" an event: every tag but the ones the change is scoped by.
+  const kinds: GroupBy = { tagsExcept: Object.keys(scope) };
+  const count = (windows: readonly Interval[], filter: { where?: TagFilter; exclude?: TagFilter; groupBy?: GroupBy }) => reader.count({ windows, signals: [signal], ...(gates ? { gates } : {}), per: "unit", ...filter });
+  const since = [{ from: change.at, to: until }];
+  const start = change.at - baselineMs;
+  const [[exposedRow], [unexposedRow], [existedRow], afterRows] = await Promise.all([
+    reached.possible ? count(since, { ...(reached.where ? { where: reached.where } : {}) }) : [undefined],
+    count(since, { ...(where ? { where } : {}), exclude: scope }),
+    reached.possible ? count([{ from: start, to: change.at }], { ...(reached.where ? { where: reached.where } : {}) }) : [undefined],
+    reached.possible ? count(since, { ...(reached.where ? { where: reached.where } : {}), groupBy: kinds }) : [],
+  ]);
+  const exposed = countsOf(exposedRow, signal);
+  const unexposed = countsOf(unexposedRow, signal);
   const contrast = compareRates(exposed, unexposed);
 
-  const start = change.at - baselineMs;
-  const existed = view.within({ from: start, to: change.at, where }).some(reached);
+  const existed = (existedRow?.events ?? 0) > 0;
   const span = Math.max(until - change.at, HOUR);
+  const stretches = wholeStretches({ end: change.at, lengthMs: span, count: Infinity, earliest: Math.max(start, (await reader.firstAt()) ?? change.at) });
+  const earlierWhere = existed ? reached.where : where;
   const earlier = new Map<string, Counts>();
-  for (const range of wholeStretches({ end: change.at, lengthMs: span, count: Infinity, earliest: Math.max(start, view.events[0]?.at ?? change.at) })) {
-    const stretch = view.within({ ...range, where });
-    for (const [kind, events] of kindsOf(existed ? stretch.filter(reached) : stretch, scoped)) {
-      const counted = countUnits(events, signal, gates);
+  if (stretches.length > 0) {
+    for (const row of await count(stretches, { ...(earlierWhere ? { where: earlierWhere } : {}), groupBy: kinds })) {
+      const kind = groupKey(kinds, row.group ?? {});
       const sum = earlier.get(kind) ?? { yes: 0, total: 0 };
-      earlier.set(kind, { yes: sum.yes + counted.yes, total: sum.total + counted.total });
+      earlier.set(kind, { yes: sum.yes + row.yes[signal]!, total: sum.total + row.total });
     }
   }
   const before = { yes: 0, total: 0 };
   let gain = 0;
   let matched = 0;
-  for (const [kind, events] of kindsOf(after, scoped)) {
-    const was = earlier.get(kind);
+  for (const row of afterRows) {
+    const was = earlier.get(groupKey(kinds, row.group ?? {}));
     if (was && was.total >= MIN_EARLIER) {
-      gain += compareRates(countUnits(events, signal, gates), was).evidence;
-      matched += events.length;
+      gain += compareRates(countsOf(row, signal), was).evidence;
+      matched += row.events;
       before.yes += was.yes;
       before.total += was.total;
     }
   }
+  const reachedEvents = exposedRow?.events ?? 0;
   // At least half the exposed events need an earlier kind to compare with, or the check says little.
-  const rise = after.length > 0 && matched >= after.length / 2 ? { before, evidence: gain } : null;
+  const rise = reachedEvents > 0 && matched >= reachedEvents / 2 ? { before, evidence: gain } : null;
   return { exposed, unexposed, contrast, rise, evidence: rise ? Math.min(contrast.evidence, rise.evidence) : change.randomized ? contrast.evidence : 0 };
 };
 
@@ -168,13 +173,15 @@ export interface Suspect {
  * the change sits just before. One event, or a slow ramp, never gives a confident match on time
  * alone. Treat the top suspect as a lead to check, not a verdict.
  */
-export const rankChanges = (view: EventView, changes: readonly Change[], { signal, gates, where, onset, until, halfLifeMs = 6 * HOUR, single = false }: { signal: string; gates?: Gates; where?: TagFilter; onset: Onset; until: number; halfLifeMs?: number; single?: boolean }): { ranked: Suspect[]; confident: boolean } => {
-  const ranked = changes
-    .map((change): Suspect => {
+export const rankChanges = async (reader: Reader, changes: readonly Change[], { signal, gates, where, onset, until, halfLifeMs = 6 * HOUR, single = false }: { signal: string; gates?: Gates; where?: TagFilter; onset: Onset; until: number; halfLifeMs?: number; single?: boolean }): Promise<{ ranked: Suspect[]; confident: boolean }> => {
+  const suspects = await Promise.all(
+    changes.map(async (change): Promise<Suspect> => {
       const time = onset.splits.reduce((sum, split) => sum + (change.at < split.at + onset.bucketMs ? split.weight * 2 ** (-Math.max(0, split.at - change.at) / halfLifeMs) : 0), 0);
-      const exposure = exposureOf(view, change, { signal, gates, where, until });
+      const exposure = await exposureOf(reader, change, { signal, ...(gates ? { gates } : {}), ...(where ? { where } : {}), until });
       return { change, time, exposure, score: Math.log(time) + (exposure?.evidence ?? 0) };
-    })
+    }),
+  );
+  const ranked = suspects
     .filter((suspect) => suspect.time > 0)
     .sort((a, b) => b.score - a.score);
   const [top, next] = ranked;
@@ -184,16 +191,17 @@ export const rankChanges = (view: EventView, changes: readonly Change[], { signa
 };
 
 /** The changes that could be behind an alert, ranked. Null for an alert with no signal to trace. */
-export const suspectsFor = (alert: Alert, view: EventView, changes: readonly Change[], { gates, lookbackMs = 10 * DAY }: { gates?: Gates; lookbackMs?: number } = {}): { onset: Onset; ranked: Suspect[]; confident: boolean } | null => {
+export const suspectsFor = async (alert: Alert, reader: Reader, changes: readonly Change[], { gates, lookbackMs = 10 * DAY }: { gates?: Gates; lookbackMs?: number } = {}): Promise<{ onset: Onset; ranked: Suspect[]; confident: boolean } | null> => {
   if (alert.signal === undefined || alert.signal === EVERY) {
     return null;
   }
   const known = changes.filter((change) => change.at <= alert.at);
   if (alert.event) {
     const onset = onsetOfEvent(alert.event.at);
-    return { onset, ...rankChanges(view, known, { signal: alert.signal, gates, onset, until: alert.at, single: true }) };
+    return { onset, ...(await rankChanges(reader, known, { signal: alert.signal, ...(gates ? { gates } : {}), onset, until: alert.at, single: true })) };
   }
-  const first = view.events[0]?.at ?? alert.at;
-  const onset = estimateOnset(view, { signal: alert.signal, gates, where: alert.where, until: alert.at, lookbackMs: Math.min(lookbackMs, alert.at - first) });
-  return onset ? { onset, ...rankChanges(view, known, { signal: alert.signal, gates, where: alert.where, onset, until: alert.at }) } : null;
+  const first = (await reader.firstAt()) ?? alert.at;
+  const where = alert.where ? { where: alert.where } : {};
+  const onset = await estimateOnset(reader, { signal: alert.signal, ...(gates ? { gates } : {}), ...where, until: alert.at, lookbackMs: Math.min(lookbackMs, alert.at - first) });
+  return onset ? { onset, ...(await rankChanges(reader, known, { signal: alert.signal, ...(gates ? { gates } : {}), ...where, onset, until: alert.at })) } : null;
 };

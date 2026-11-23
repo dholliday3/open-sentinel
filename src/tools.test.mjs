@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { viewOf } from "./metrics.ts";
+import { memoryReader } from "./reader.ts";
 import { stream } from "./testing.ts";
 import { summarize, toolsFor } from "./tools.ts";
 import { DAY, HOUR } from "./types.ts";
@@ -10,7 +10,7 @@ const BROKE = START + 8 * DAY + 9 * HOUR;
 const iso = (ms) => new Date(ms).toISOString();
 const events = stream({ start: START, hours: 9 * 24, perHour: 20, tags: (random) => ({ platform: random() < 0.3 ? "ios" : "web" }), signals: { bug: (at, tags) => (at >= BROKE && tags.platform === "ios" ? 0.8 : 0.05), praise: 0.1 } });
 const changes = [{ id: "rel", at: BROKE - HOUR / 2, kind: "release", what: "mobile 4.12.0", scope: { platform: "ios" } }, { id: "old", at: START + DAY, kind: "deploy", what: "last week" }];
-const tools = toolsFor({ view: viewOf(events), changes }, { signals: ["bug", "praise"] });
+const tools = toolsFor({ reader: memoryReader(events), changes }, { signals: ["bug", "praise"] });
 const window = { from: iso(BROKE), to: iso(BROKE + 6 * HOUR) };
 
 test("signal_series counts a signal per bucket, optionally for one tag value", async () => {
@@ -68,14 +68,14 @@ test("changes lists the change log; suspects ranks it for a signal that rose", a
 test("a bad time is an error the caller can read; data may be a function read on each call", async () => {
   await assert.rejects(async () => tools.changes.run({ from: "yesterday", to: iso(BROKE) }), /"from" must be an ISO time/);
   let reads = 0;
-  const live = toolsFor(() => ((reads += 1), { view: viewOf(events), changes }), { signals: ["bug"] });
+  const live = toolsFor(() => ((reads += 1), { reader: memoryReader(events), changes }), { signals: ["bug"] });
   await live.changes.run(window);
   await live.top_signals.run(window);
   assert.equal(reads, 2);
 });
 
-test("summarize gives every signal's count in a range", () => {
-  const summary = summarize(viewOf(events), { signals: ["bug", "praise"], from: BROKE, to: BROKE + HOUR });
+test("summarize gives every signal's count in a range", async () => {
+  const summary = await summarize(memoryReader(events), { signals: ["bug", "praise"], from: BROKE, to: BROKE + HOUR });
   assert.match(summary.bug, /^\d+\/20$/);
   assert.deepEqual(Object.keys(summary), ["bug", "praise"]);
 });

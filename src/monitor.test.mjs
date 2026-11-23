@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { viewOf } from "./metrics.ts";
+import { memoryReader } from "./reader.ts";
 import { createRunner, groupAlerts, replay } from "./monitor.ts";
 import { DAY, HOUR, WEEK } from "./types.ts";
 
-const view = viewOf([]);
+const reader = memoryReader([]);
 /** A monitor that answers by the hour, as scripted, and keeps what it was given. Hours not listed are "ok". */
 const scripted = (name, hours, extra = {}) => {
   const seen = [];
   const states = Array.isArray(hours) ? Object.fromEntries(hours.map((hour) => [hour, "firing"])) : hours;
-  return { name, severity: "page", signal: "bug", windowMs: 3 * HOUR, lookbackMs: WEEK, tested: true, seen, check: (_view, now, context) => (seen.push({ now, ...context }), { state: states[now / HOUR] ?? "ok", detail: { hour: now / HOUR } }), ...extra };
+  return { name, severity: "page", signal: "bug", windowMs: 3 * HOUR, lookbackMs: WEEK, tested: true, seen, check: (_reader, now, context) => (seen.push({ now, ...context }), { state: states[now / HOUR] ?? "ok", detail: { hour: now / HOUR } }), ...extra };
 };
 const run = async (runner, hours, changes) => {
   const ticks = [];
   for (const hour of hours) {
-    ticks.push({ hour, ...(await runner.tick(view, hour * HOUR, changes)) });
+    ticks.push({ hour, ...(await runner.tick(reader, hour * HOUR, changes)) });
   }
   return ticks;
 };
@@ -27,7 +27,7 @@ test("tested monitors share the weekly budget, per severity; a fixed cutoff stay
   assert.equal(runner.alphaOf(monitors[2]), 2 / (168 * 1));
   assert.equal(runner.alphaOf(monitors[3]), 0.01);
   assert.equal(createRunner({ monitors, stepMs: 15 * 60_000 }).alphaOf(monitors[0]), 0.25 / (168 * 4 * 2));
-  await runner.tick(view, HOUR);
+  await runner.tick(reader, HOUR);
   assert.equal(monitors[0].seen[0].alpha, 0.5 / 336);
 });
 
@@ -45,13 +45,13 @@ test("one alert per episode; the episode ends after the monitor has been clear f
 });
 
 test("a check may be asynchronous, so a monitor can ask a database", async () => {
-  const monitor = { ...scripted("a", []), check: async (_view, now) => ({ state: now === HOUR ? "firing" : "ok", detail: {} }) };
-  assert.equal((await createRunner({ monitors: [monitor] }).tick(view, HOUR)).fired.length, 1);
+  const monitor = { ...scripted("a", []), check: async (_reader, now) => ({ state: now === HOUR ? "firing" : "ok", detail: {} }) };
+  assert.equal((await createRunner({ monitors: [monitor] }).tick(reader, HOUR)).fired.length, 1);
 });
 
 test("too little data is reported, not alerted, and never ends an episode", async () => {
   const quiet = scripted("quiet", { 1: "no_data" });
-  assert.deepEqual(await createRunner({ monitors: [quiet] }).tick(view, HOUR), { fired: [], resolved: [], noData: ["quiet"] });
+  assert.deepEqual(await createRunner({ monitors: [quiet] }).tick(reader, HOUR), { fired: [], resolved: [], noData: ["quiet"] });
 
   // Fires at hour 1, then the stream goes quiet for a day, then it fires again: still one episode.
   const stopped = scripted("stopped", { 1: "firing", ...Object.fromEntries(hoursTo(30).slice(1).map((hour) => [hour, "no_data"])), 31: "firing" });
@@ -72,12 +72,12 @@ test("a monitor that reports events raises one alert for each event, however oft
 test("an event alerted on is remembered across a restart, and forgotten once no monitor can report it again", async () => {
   const again = { name: "one event", severity: "page", windowMs: 0, lookbackMs: 6 * HOUR, tested: false, check: () => ({ state: "firing", detail: {}, events: [{ id: "e1", at: 10 }] }) };
   const before = createRunner({ monitors: [again] });
-  assert.equal((await before.tick(view, HOUR)).fired.length, 1);
+  assert.equal((await before.tick(reader, HOUR)).fired.length, 1);
   const after = createRunner({ monitors: [again], snapshot: JSON.parse(JSON.stringify(before.snapshot())) });
-  assert.equal((await after.tick(view, 2 * HOUR)).fired.length, 0);
+  assert.equal((await after.tick(reader, 2 * HOUR)).fired.length, 0);
   assert.deepEqual(after.snapshot().alerted, { "one event\ne1": 10 });
   // Its time is now further back than the lookback plus two steps: nothing can report it again.
-  await after.tick(view, 9 * HOUR);
+  await after.tick(reader, 9 * HOUR);
   assert.deepEqual(after.snapshot().alerted, {});
 });
 
@@ -97,8 +97,8 @@ test("a planned change mutes alerts on the signals it predicted, while their str
   assert.equal(ticks[1].fired[0].mutedBy, undefined);
   // A 3-hour window ending at hour 16 still reaches back into the planned stretch (10 to 14).
   const late = createRunner({ monitors: [scripted("late", [16]), scripted("later", [17.5])] });
-  assert.equal((await late.tick(view, 16 * HOUR, [launch])).fired[0].mutedBy, "launch");
-  assert.equal((await late.tick(view, 17.5 * HOUR, [launch])).fired[0].mutedBy, undefined);
+  assert.equal((await late.tick(reader, 16 * HOUR, [launch])).fired[0].mutedBy, "launch");
+  assert.equal((await late.tick(reader, 17.5 * HOUR, [launch])).fired[0].mutedBy, undefined);
 });
 
 test("an episode that began muted raises its alert once it outlasts what was planned", async () => {
@@ -127,7 +127,7 @@ test("baselines are told what to leave out: planned changes, confirmed incidents
 test("a snapshot carries episodes and exclusions across a restart", async () => {
   const before = createRunner({ monitors: [scripted("a", [1])] });
   before.exclude({ from: 5, to: 6 });
-  await before.tick(view, HOUR);
+  await before.tick(reader, HOUR);
   const monitor = scripted("a", [2, 20]);
   const after = createRunner({ monitors: [monitor], snapshot: JSON.parse(JSON.stringify(before.snapshot())) });
   const ticks = await run(after, [2, 20]);

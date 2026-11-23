@@ -13,6 +13,7 @@ export * from "./labelers/chat.ts";
 export * from "./labelers/rules.ts";
 export * from "./counting.ts";
 export * from "./store.ts";
+export * from "./reader.ts";
 export * from "./stores/jsonl.ts";
 export * from "./metrics.ts";
 export * from "./monitor.ts";

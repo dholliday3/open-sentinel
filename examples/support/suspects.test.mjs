@@ -5,7 +5,7 @@
 // and must never be a confident wrong answer.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { DAY, HOUR, suspectsFor, viewOf } from "../../src/index.ts";
+import { DAY, HOUR, memoryReader, suspectsFor } from "../../src/index.ts";
 import { seeded } from "../../src/testing.ts";
 import { run } from "./replay.ts";
 import { plantedBehind } from "./score.ts";
@@ -20,12 +20,12 @@ for (const [name, incident] of [["support", "android_signin"], ["support-holdout
     const { inbox, scored } = await run(name, { planned: true });
     const first = scored.items.find((item) => item.id === incident).first;
     // The ranking sees only what had happened when the alert fired.
-    const view = viewOf(inbox.events.filter((event) => event.at < first.at));
+    const reader = memoryReader(inbox.events.filter((event) => event.at < first.at));
     const random = seeded(5);
     const results = [];
     for (let draw = 0; draw < DRAWS; draw += 1) {
       const decoys = Array.from({ length: inbox.days * OTHER_DEPLOYS_A_DAY }, (_, i) => ({ id: `decoy-${i}`, at: inbox.start + Math.floor(i / OTHER_DEPLOYS_A_DAY) * DAY + Math.floor(random() * 10 * HOUR), kind: "deploy", what: `unrelated deploy ${i}` }));
-      const found = suspectsFor(first, view, [...inbox.changes, ...decoys], { gates: support.gates });
+      const found = await suspectsFor(first, reader, [...inbox.changes, ...decoys], { gates: support.gates });
       results.push({ top: found.ranked[0].change.what, confident: found.confident, exposure: found.ranked[0].exposure });
     }
     assert.equal(results.filter((result) => CAUSE[incident].test(result.top) && result.confident).length, DRAWS, JSON.stringify(results.find((result) => !CAUSE[incident].test(result.top) || !result.confident)));
@@ -37,12 +37,12 @@ for (const [name, incident] of [["support", "android_signin"], ["support-holdout
 test("support: an incident with no scoped change is never pinned confidently on the wrong deploy", async () => {
   const { inbox, scored } = await run("support", { planned: false });
   const first = scored.items.find((item) => item.id === "invoice_pdf_total").first;
-  const view = viewOf(inbox.events.filter((event) => event.at < first.at));
+  const reader = memoryReader(inbox.events.filter((event) => event.at < first.at));
   const random = seeded(6);
   let right = 0;
   for (let draw = 0; draw < DRAWS; draw += 1) {
     const decoys = Array.from({ length: inbox.days * OTHER_DEPLOYS_A_DAY }, (_, i) => ({ id: `decoy-${i}`, at: inbox.start + Math.floor(i / OTHER_DEPLOYS_A_DAY) * DAY + Math.floor(random() * 10 * HOUR), kind: "deploy", what: `unrelated deploy ${i}` }));
-    const found = suspectsFor(first, view, [...inbox.changes, ...decoys], { gates: support.gates });
+    const found = await suspectsFor(first, reader, [...inbox.changes, ...decoys], { gates: support.gates });
     const isCause = /^api: invoice PDF renderer v2/.test(found.ranked[0].change.what);
     assert.ok(isCause || !found.confident, `confidently blamed "${found.ranked[0].change.what}"`);
     right += isCause ? 1 : 0;

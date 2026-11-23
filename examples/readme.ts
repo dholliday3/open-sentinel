@@ -3,7 +3,7 @@
 // compile. When you change a snippet in either file, change it here. The README's real-world
 // examples are in recipes.ts.
 import { test } from "node:test";
-import { auditSample, backtestQuestion, choice, consoleSink, count, countEvents, createPipeline, createWatch, DAY, decisionLabeler, defineSchema, eventMonitor, fitGates, HOUR, jsonlStore, labelersOf, readEvents, shareMonitors, silenceMonitor, toolsFor, viewOf, yesNo } from "../src/index.ts";
+import { auditSample, backtestQuestion, choice, consoleSink, countEvents, countsOf, createPipeline, createWatch, DAY, decisionLabeler, defineSchema, eventMonitor, fitGates, HOUR, jsonlStore, labelersOf, memoryReader, readEvents, shareMonitors, silenceMonitor, toolsFor, yesNo } from "../src/index.ts";
 import type { Change, Json, LabeledEvent, Labeler, Monitor, Sink, Store, TextEvent, Tool } from "../src/index.ts";
 import { storeContract } from "../src/testing.ts";
 
@@ -169,19 +169,20 @@ export const ceiling = (signal: string, share: number): Monitor => ({
   windowMs: DAY,
   lookbackMs: DAY,
   tested: false,
-  check: (view, now, { gates }) => {
-    const today = count(view.within({ from: now - DAY, to: now }), signal, gates);
+  check: async (reader, now, { gates }) => {
+    const [row] = await reader.count({ windows: [{ from: now - DAY, to: now }], signals: [signal], gates, per: "event" });
+    const today = countsOf(row, signal);
     return { state: today.total === 0 ? "no_data" : today.yes / today.total > share ? "firing" : "ok", detail: { ...today } };
   },
 });
 
 export const ceilingInSql = (signal: string, share: number): Monitor => ({
   ...ceiling(signal, share),
-  check: async (_view, now) => {
+  check: async (_reader, now) => {
     const today = await sql.count("select count(*) filter (where signals ->> $1 >= '0.5') as yes, count(*) as total from events where at >= $2 and at < $3", [signal, now - DAY, now]);
     return { state: today.total === 0 ? "no_data" : today.yes / today.total > share ? "firing" : "ok", detail: { ...today } };
   },
 });
 
 const runbook: Tool = { description: "The runbook for a product area", input: { area: { type: "string", description: "Area name" } }, run: ({ area }) => readRunbook(String(area)) };
-export const tools = { ...toolsFor({ view: viewOf([]), changes: [] }, { signals: support.signals }), runbook };
+export const tools = { ...toolsFor({ reader: memoryReader([]), changes: [] }, { signals: support.signals }), runbook };
