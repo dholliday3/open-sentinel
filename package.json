@@ -1,6 +1,6 @@
 {
   "name": "open-sentinel",
-  "version": "0.0.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Typed questions about text, answered as probabilities, turned into metrics, monitors and alerts.",
   "license": "MIT",
@@ -35,7 +35,8 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
