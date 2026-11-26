@@ -52,7 +52,9 @@ const some = <Value>(random: () => number, values: readonly Value[], p = 0.5): V
 // Keys and values that are awkward in SQL and JSON paths: dots, quotes, `=`, `>=`, backslashes.
 const SIGNAL_KEYS = ["a", "b", "area=x", "f>=2", 'say "hi"', "a.second", "back\\slash"] as const;
 const TAG_VALUES: Record<string, ReadonlyArray<string | null>> = { platform: ["ios", "web", null], plan: ["pro", "free"], "v.x": ["1", "2"], 'it\'s "q"': ["o'k", 'say "x"'] };
-const PROBABILITIES = [0, 0.3, 0.5, 0.5000000000000001, 0.7, 0.9, 1];
+// Around 0.5, the default gate, and around 0.05, the database stores' default hit floor.
+const PROBABILITIES = [0, 0.03, 0.05, 0.05000000000000001, 0.3, 0.5, 0.5000000000000001, 0.7, 0.9, 1];
+const GATES = [0, 0.05, 0.05000000000000001, 0.5, 0.7, 0.9, 1];
 
 /**
  * A made-up store history that exercises every rule a count must keep: two schemas, three
@@ -96,7 +98,7 @@ const randomWindow = (random: () => number): Interval => {
   return random() < 0.1 ? { from, to: from } : { from, to: from + Math.floor(random() * 900) };
 };
 const randomTags = (random: () => number): TagFilter => Object.fromEntries(some(random, Object.keys(TAG_VALUES), 0.4).flatMap((key) => TAG_VALUES[key]!.filter((value): value is string => value !== null).slice(0, 1 + Math.floor(random() * 2)).slice(-1).map((value) => [key, value])));
-const randomGates = (random: () => number): Gates => Object.fromEntries(some(random, SIGNAL_KEYS, 0.3).map((key) => [key, choose(random, [0, 0.5, 0.7, 0.9, 1])]));
+const randomGates = (random: () => number, floor = 0): Gates => Object.fromEntries(some(random, SIGNAL_KEYS, 0.3).map((key) => [key, choose(random, GATES.filter((gate) => gate >= floor))]));
 const randomAnswers = (random: () => number): Pick<EventQuery, "labeler" | "oneAnswer"> => {
   const roll = random();
   if (roll < 0.3) {
@@ -109,8 +111,8 @@ const randomAnswers = (random: () => number): Pick<EventQuery, "labeler" | "oneA
   return {};
 };
 
-/** A count to check a store's `count` with: every option, in every combination, now and then. */
-export const randomCountQuery = (random: () => number): CountQuery => {
+/** A count to check a store's `count` with: every option, in every combination, now and then. Its gates are at or above `floor`. */
+export const randomCountQuery = (random: () => number, floor = 0): CountQuery => {
   const signals = some(random, ["a", "b", "a&b", "*", "area=x", "f>=2", 'say "hi"', "missing", "a&area=x&f>=2", "back\\slash"], 0.4);
   const groupBy = choose<GroupBy | undefined>(random, [undefined, undefined, { tags: ["platform"] }, { tags: ["platform", 'it\'s "q"'] }, { tagsExcept: ["v.x"] }, { tagsExcept: [] }, { tagsExcept: ["platform", "plan"] }]);
   const where = random() < 0.3 ? randomTags(random) : undefined;
@@ -120,7 +122,7 @@ export const randomCountQuery = (random: () => number): CountQuery => {
     ...randomAnswers(random),
     windows: Array.from({ length: Math.floor(random() * 5) }, () => randomWindow(random)),
     signals,
-    ...(random() < 0.6 ? { gates: randomGates(random) } : {}),
+    ...(random() < 0.6 ? { gates: randomGates(random, floor) } : {}),
     per: random() < 0.6 ? "unit" : "event",
     ...(where ? { where } : {}),
     ...(exclude ? { exclude } : {}),
@@ -132,7 +134,7 @@ export const randomCountQuery = (random: () => number): CountQuery => {
 export const randomEventQuery = (random: () => number): EventQuery => {
   const window = randomWindow(random);
   const where = random() < 0.3 ? randomTags(random) : undefined;
-  const atLeast = random() < 0.4 ? Array.from({ length: Math.floor(random() * 3) }, () => Object.fromEntries(some(random, SIGNAL_KEYS, 0.3).map((key) => [key, choose(random, [0, 0.5, 0.9, 1])]))) : undefined;
+  const atLeast = random() < 0.4 ? Array.from({ length: Math.floor(random() * 3) }, () => Object.fromEntries(some(random, SIGNAL_KEYS, 0.3).map((key) => [key, choose(random, [0, 0.03, 0.05, 0.5, 0.9, 1])]))) : undefined;
   const order = choose<EventQuery["order"]>(random, [undefined, "oldest", "newest", { surest: ["a"] }, { surest: ["a", "area=x"] }, { surest: ["missing"] }]);
   return {
     ...(random() < 0.8 ? { from: window.from } : {}),
@@ -153,6 +155,15 @@ export interface StoreCheck {
   run(): Promise<void>;
 }
 
+export interface StoreContractOptions {
+  /**
+   * The lowest gate the store counts at, for a store that keeps only answers at or above it (the
+   * database stores' `hitFloor`). Counts are then checked with gates at or above it, and a count
+   * with a gate below it must throw. Reads with `atLeast` must still answer any gate.
+   */
+  hitFloor?: number;
+}
+
 /**
  * What every `Store` must do, as checks to hand to your test runner. `make` is called once per
  * check and must give an empty store each time. The built-in stores run these in
@@ -162,7 +173,7 @@ export interface StoreCheck {
  *
  * They throw node:assert errors, which every test runner on Node reports as a failure.
  */
-export const storeContract = (make: () => Store | Promise<Store>): StoreCheck[] => {
+export const storeContract = (make: () => Store | Promise<Store>, { hitFloor = 0 }: StoreContractOptions = {}): StoreCheck[] => {
   const event = (id: string, at: number, extra: Partial<LabeledEvent> = {}): LabeledEvent => ({ id, at, text: `text ${id}`, schema: "t@1", labeler: "l@1", probability: "native", signals: { bug: 0.9 }, ...extra });
   /** A store filled with a random history, and the history as it should be kept. */
   const filled = async (store: Store, seed: number): Promise<{ stored: LabeledEvent[]; random: () => number }> => {
@@ -205,6 +216,29 @@ export const storeContract = (make: () => Store | Promise<Store>): StoreCheck[] 
       // A deleted event can be stored again.
       assert.deepEqual([...(await store.known(["a"], "t@1", "l@1"))], []);
     },
+    "counts answers just under, at and just over its lowest gate, alone and joined, from each labeler": async (store) => {
+      const floor = hitFloor > 0 ? hitFloor : 0.05;
+      const near = [floor - 1e-9, floor, floor + 1e-9];
+      const events = near.flatMap((a, i) =>
+        near.flatMap((b, j) => ["l@1", "l@2"].map((labeler, k) => event(`e${i}${j}`, 10 * (i * 3 + j) + k, { labeler, unit: `u${(i + j) % 4}`, tags: { platform: k === 0 ? "ios" : "web" }, signals: k === 0 ? { a, b } : { a: b, b: a } }))),
+      );
+      await store.append(events);
+      const query: CountQuery = { schema: "t@1", windows: [{ from: 0, to: 100 }, { from: 0, to: 45 }], signals: ["a", "b", "a&b", "*"], gates: { a: floor, b: floor + 1e-9 }, per: "unit" };
+      for (const answers of [{ labeler: "l@1" }, { labeler: "l@2" }, { oneAnswer: { prefer: "l@2", from: 0, to: 100 } }]) {
+        for (const per of ["unit", "event"] as const) {
+          const asked = { ...query, ...answers, per, ...(per === "event" ? { groupBy: { tags: ["platform"] } } : { where: { platform: "web" } }) };
+          assert.deepEqual(await store.count(asked), countEvents(events, asked), JSON.stringify(asked));
+        }
+      }
+      const read: EventQuery = { schema: "t@1", labeler: "l@1", atLeast: [{ a: floor, b: floor }], order: { surest: ["a", "b"] } };
+      assert.deepEqual(await store.events(read), readEvents(events, read));
+      if (hitFloor > 0) {
+        await assert.rejects(async () => store.count({ ...query, gates: { b: hitFloor / 2 } }), new RegExp(`gate ${hitFloor / 2} for "b" is below this store's hitFloor of ${hitFloor}`));
+        // A read may go below the floor: it reads each event's answers instead.
+        const below: EventQuery = { schema: "t@1", labeler: "l@1", atLeast: [{ a: 0, b: hitFloor / 2 }] };
+        assert.deepEqual(await store.events(below), readEvents(events, below));
+      }
+    },
     "a change recorded again replaces the first": async (store) => {
       await store.recordChange({ id: "c1", at: 5, kind: "deploy", what: "v1" });
       await store.recordChange({ id: "c2", at: 15, kind: "flag", what: "on", scope: { "flag:x": "on" } });
@@ -225,7 +259,7 @@ export const storeContract = (make: () => Store | Promise<Store>): StoreCheck[] 
       assert.equal(await store.delete({ before: 300 }), stored.filter((event) => event.unit !== "u3" && event.at < 300).length);
       const left = stored.filter((event) => event.unit !== "u3" && event.at >= 300);
       for (let n = 0; n < 40; n += 1) {
-        const query = randomCountQuery(random);
+        const query = randomCountQuery(random, hitFloor);
         assert.deepEqual(await store.count(query), countEvents(left, query), JSON.stringify(query));
       }
       // An event deleted and stored again goes after everything stored before it.
@@ -255,7 +289,7 @@ export const storeContract = (make: () => Store | Promise<Store>): StoreCheck[] 
           await store.append([event]);
         }
         for (let n = 0; n < 100; n += 1) {
-          const query = randomCountQuery(random);
+          const query = randomCountQuery(random, hitFloor);
           assert.deepEqual(await store.count(query), countEvents(stored, query), JSON.stringify(query));
         }
       }

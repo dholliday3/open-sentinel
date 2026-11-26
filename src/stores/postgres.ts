@@ -4,7 +4,9 @@
 //   const store = postgresStore({ query: (sql, params) => pool.query(sql, params) });
 //   await store.migrate();
 //
-// Counting happens in Postgres: a tick sends a few queries and gets back a row per window.
+// Counting happens in Postgres: a tick sends a few queries and gets back a row per window. Each
+// event's answers are read from its jsonb, which is binary and read by parallel workers: unlike
+// SQLite and DuckDB, Postgres counted slower from a table of hits (docs/evaluation.md#scale).
 import { schemaSql, sqlStore } from "./sql.ts";
 import type { ColumnType, Dialect, SqlStore, SqlStoreOptions } from "./sql.ts";
 

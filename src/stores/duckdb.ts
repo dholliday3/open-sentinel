@@ -5,8 +5,9 @@
 //   const store = duckdbStore({ query: async (sql, params) => ({ rows: (await connection.runAndReadAll(sql, params)).getRowObjectsJS() }) });
 //
 // DuckDB is columnar: a count reads only the columns it needs, which suits long history and
-// heavy volume. One process writes a DuckDB file at a time.
-import { schemaSql, sqlStore } from "./sql.ts";
+// heavy volume. One process writes a DuckDB file at a time, and an event and its hits are
+// written, and deleted, in one transaction.
+import { FLOOR_KEY, floorSql, hitsOf, schemaSql, sqlStore } from "./sql.ts";
 import type { ColumnType, Dialect, SqlStore, SqlStoreOptions } from "./sql.ts";
 
 /** A JSON path to one key, quoted, so a key with dots, quotes or brackets is still one key. */
@@ -26,13 +27,17 @@ export const duckdbDialect: Dialect = {
   least: (values) => (values.length === 1 ? values[0]! : `LEAST(${values.join(", ")})`),
   whole: (value) => `CAST(FLOOR(${value}) AS INTEGER)`,
   // No indexes past the primary key: DuckDB skips row groups by their range of `at` instead.
-  ddl: ({ events, changes, state }) => [
+  ddl: ({ events, hits, changes, state, hitFloor }) => [
     `CREATE SEQUENCE IF NOT EXISTS ${events}_seq`,
     `CREATE TABLE IF NOT EXISTS ${events} (seq BIGINT DEFAULT nextval('${events}_seq'), schema_id VARCHAR NOT NULL, id VARCHAR NOT NULL, labeler VARCHAR NOT NULL, at_ms DOUBLE NOT NULL, unit VARCHAR, tags JSON, signals JSON NOT NULL, probability VARCHAR NOT NULL, text VARCHAR, context JSON, part VARCHAR, PRIMARY KEY (schema_id, id, labeler))`,
     `CREATE SEQUENCE IF NOT EXISTS ${changes}_seq`,
     `CREATE TABLE IF NOT EXISTS ${changes} (seq BIGINT DEFAULT nextval('${changes}_seq'), id VARCHAR PRIMARY KEY, at_ms DOUBLE NOT NULL, change JSON NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${state} (key VARCHAR PRIMARY KEY, value JSON NOT NULL)`,
+    `INSERT INTO ${state} (key, value) VALUES ('${FLOOR_KEY}', CAST('${hitFloor}' AS JSON)) ON CONFLICT (key) DO NOTHING`,
+    `CREATE TABLE IF NOT EXISTS ${hits} AS ${hitsOf(duckdbDialect, `${events} e`, "e", floorSql(hitFloor))}`,
   ],
+  hits: { together: "transaction", lookup: "join", each: (column) => ({ from: `json_each(${column}) AS j`, p: "CASE WHEN j.type IN ('BIGINT', 'UBIGINT', 'HUGEINT', 'DOUBLE') THEN CAST(j.value AS DOUBLE) END" }) },
+  bitOr: (value) => `BIT_OR(${value})`,
   maxParams: 65_535,
   fence: "",
   // Statements sent together on one connection failed now and then ("Failed to execute prepared statement").
@@ -43,6 +48,6 @@ export const duckdbDialect: Dialect = {
 export const duckdbStore = (options: SqlStoreOptions): SqlStore => sqlStore(duckdbDialect, options);
 
 /** The tables and sequences `duckdbStore` needs, as SQL. */
-export const duckdbSchema = (table?: string, partition?: string): string => schemaSql(duckdbDialect, table, partition);
+export const duckdbSchema = (table?: string, partition?: string, hitFloor?: number): string => schemaSql(duckdbDialect, table, partition, hitFloor);
 
 export type { Query, SqlStore, SqlStoreOptions, SqlValue } from "./sql.ts";

@@ -17,7 +17,8 @@ what open-sentinel does when a part fails, and the rules the design holds to.
 | The stream stops | `silenceMonitor` fires. Share monitors say `no_data`, and open episodes stay open. |
 | You reword a question | The schema's version changes, and monitors on the new version start with no baseline. `upgrade` moves history across for the cost of the changed questions only. |
 | You change the labeler | Run `compareLabelers` first. The watch counts each event once, the newest labeler's answer where there are two, and tells you (`mixedLabelers`) when its window holds answers from more than one labeler. Pass `labeler` to count only one. |
-| A customer asks to be forgotten | `store.delete({ unit })`. The watch counts the store fresh on every tick, so its counts drop them at once. What a sink was already sent is yours to delete. |
+| A customer asks to be forgotten | `store.delete({ unit })`. SQLite and DuckDB delete each event's hits with it, in the same statement or transaction. The watch counts the store fresh on every tick, so its counts drop them at once. What a sink was already sent is yours to delete. |
+| The process dies while storing | SQLite and DuckDB write an event and its hits together (by trigger in SQLite, in one transaction in DuckDB), so a crash leaves both or neither. Sending the batch again stores what is missing. |
 
 Two limits on these guarantees:
 

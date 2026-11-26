@@ -141,12 +141,26 @@ const store = duckdbStore({ query: async (sql, params) => ({ rows: (await connec
 ```
 
 - `migrate()` creates `sentinel_events`, `sentinel_changes` and `sentinel_state` if they don't
-  exist. `table: "app.sentinel"` names them differently. `postgresSchema()`, `sqliteSchema()`
-  and `duckdbSchema()` give the same SQL for a migration tool of your own.
+  exist, and in SQLite and DuckDB `sentinel_hits`. `table: "app.sentinel"` names them
+  differently. `postgresSchema()`, `sqliteSchema()` and `duckdbSchema()` give the same SQL for a
+  migration tool of your own. A SQLite or DuckDB store created before the hits table gets it,
+  filled from the events already stored, the first time `migrate()` runs
+  ([changelog](../CHANGELOG.md#migrating-from-01)).
+- **Hits (SQLite and DuckDB).** These keep JSON as text, which a count would parse for every
+  event and signal. So each event's answers are kept whole, as JSON, and again as hits: one
+  narrow row for each answer at or above the store's `hitFloor` (0.05 by default). Counts read the
+  hits and parse no JSON, and a read that filters by a signal (a one-event monitor, a notice's
+  examples) finds its events through them. An event and its hits are written and deleted
+  together, by triggers in SQLite and in one transaction in DuckDB. A count with a gate below the
+  floor throws rather than miscount; an `atLeast` read below it still answers, from each event's
+  JSON. The floor is fixed when the hits table is created: pass the same one after.
+  Postgres keeps no hits: its jsonb is binary and read by parallel workers, and counting from
+  hits measured slower there ([evaluation](evaluation.md#scale)). It takes any gate.
 - Signal keys, tags and their values are always parameters, never SQL text, and a table name must
   be a plain name.
 - `append` sends 500 events a statement (`batch`). If one statement fails, the ones before it are
-  stored; sending the batch again stores the rest and skips what is there.
+  stored (in DuckDB, which writes a call in one transaction, none are); sending the batch again
+  stores the rest and skips what is there.
 - Times are stored as numbers of milliseconds, exactly as given.
 - Many workspaces in one store: name the tag that splits them when the tables are created,
   `postgresStore({ query, partition: "workspace" })`, and give each workspace its own watch,
@@ -345,6 +359,8 @@ const kv: Store = {
 runner on Node; `make` must give an empty store each time. Among them, a store's counts and reads
 must equal the reference functions' on random histories with copies from three labelers, late
 events and awkward keys. The built-in stores run it in `src/store.test.mjs` and `src/stores/`.
+A store that counts only answers at or above a floor passes it as `storeContract(make, { hitFloor })`:
+counts are then checked at gates from the floor up, and one below it must throw.
 
 ```ts
 import { test } from "node:test";

@@ -2,7 +2,7 @@
 // dependency (skipped when it isn't installed).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { postgresSchema, postgresStore } from "./postgres.ts";
+import { postgresDialect, postgresSchema, postgresStore } from "./postgres.ts";
 import { checkSqlStore } from "./sql-checks.mjs";
 
 let db;
@@ -14,14 +14,16 @@ try {
 }
 const skip = db ? false : "@electric-sql/pglite isn't installed: run npm install";
 
+const query = (sql, params) => db.query(sql, params);
+
 checkSqlStore(
   "postgresStore",
-  async (table, partition) => {
-    const store = postgresStore({ query: (sql, params) => db.query(sql, params), table, ...(partition ? { partition } : {}) });
+  async (table, partition, through = query, hitFloor) => {
+    const store = postgresStore({ query: through, table, ...(partition ? { partition } : {}), ...(hitFloor ? { hitFloor } : {}) });
     await store.migrate();
     return store;
   },
-  { skip },
+  { skip, query, dialect: postgresDialect },
 );
 
 test("postgresSchema is the SQL migrate() runs, for a migration tool of your own", { skip }, async () => {

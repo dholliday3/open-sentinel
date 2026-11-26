@@ -1,7 +1,7 @@
 // The DuckDB store, run on @duckdb/node-api, a dev dependency (skipped when it isn't installed).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { duckdbSchema, duckdbStore } from "./duckdb.ts";
+import { duckdbDialect, duckdbSchema, duckdbStore } from "./duckdb.ts";
 import { checkSqlStore } from "./sql-checks.mjs";
 
 let connection;
@@ -16,12 +16,12 @@ const query = async (sql, params) => ({ rows: (await connection.runAndReadAll(sq
 
 checkSqlStore(
   "duckdbStore",
-  async (table, partition) => {
-    const store = duckdbStore({ query, table, ...(partition ? { partition } : {}) });
+  async (table, partition, through = query, hitFloor) => {
+    const store = duckdbStore({ query: through, table, ...(partition ? { partition } : {}), ...(hitFloor ? { hitFloor } : {}) });
     await store.migrate();
     return store;
   },
-  { skip },
+  { skip, query, dialect: duckdbDialect },
 );
 
 test("duckdbSchema is the SQL migrate() runs", { skip }, () => {

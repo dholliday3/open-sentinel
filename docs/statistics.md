@@ -10,8 +10,9 @@ and `src/quality.ts`. Numbers called synthetic come from the data described in
 The store keeps each answer as a probability. A signal counts as yes for an event when its
 probability is at or above the signal's gate: 0.5 by default, a question's own `gate`, or a gate
 fitted from a checked sample (`fitGates`). Keeping the probabilities means a gate can be moved
-later without asking the model again. A joined key (`a&b`) is yes when both parts are yes at
-their own gates.
+later without asking the model again: on a SQLite or DuckDB store, down to its hit floor (0.05
+by default), below which answers aren't kept in a form counts read. A joined key (`a&b`) is yes when
+both parts are yes at their own gates.
 
 Gates should be set per question. On 390 synthetic messages checked against a stronger model,
 Jev's answers at 0.9 or above were right 99% of the time, while answers between 0.7 and 0.8 were

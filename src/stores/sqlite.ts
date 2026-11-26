@@ -6,8 +6,9 @@
 //
 //   const store = sqliteStore({ query: async (sql, params) => ({ rows: (await env.DB.prepare(sql).bind(...params).all()).results }), maxParams: 100 });   // D1
 //
-// One file, one writer at a time; counting happens in SQLite.
-import { schemaSql, sqlStore } from "./sql.ts";
+// One file, one writer at a time; counting happens in SQLite, from a table of hits that triggers on
+// the events table write and delete in the same statement as each event.
+import { FLOOR_KEY, floorSql, HIT_COLUMNS, hitsOf, schemaSql, sqlStore } from "./sql.ts";
 import type { ColumnType, Dialect, SqlStore, SqlStoreOptions, SqlValue } from "./sql.ts";
 
 /** A JSON path to one key, quoted, so a key with dots, quotes or brackets is still one key. */
@@ -27,18 +28,29 @@ export const sqliteDialect: Dialect = {
   least: (values) => (values.length === 1 ? values[0]! : `MIN(${values.join(", ")})`),
   // Rounds toward zero, which is down for what is never negative; FLOOR isn't in every build.
   whole: (value) => `CAST(${value} AS INTEGER)`,
-  ddl: ({ events, changes, state, prefix, partitioned }) => [
+  ddl: ({ events, hits, changes, state, prefix, partitioned, hitFloor }) => [
     `CREATE TABLE IF NOT EXISTS ${events} (seq INTEGER PRIMARY KEY, schema_id TEXT NOT NULL, id TEXT NOT NULL, labeler TEXT NOT NULL, at_ms REAL NOT NULL, unit TEXT, tags TEXT, signals TEXT NOT NULL, probability TEXT NOT NULL, text TEXT, context TEXT, part TEXT, UNIQUE (schema_id, id, labeler))`,
-    `CREATE INDEX IF NOT EXISTS ${prefix}_events_time ON ${events} (schema_id, labeler, at_ms)`,
-    ...(partitioned ? [`CREATE INDEX IF NOT EXISTS ${prefix}_events_part ON ${events} (schema_id, part, labeler, at_ms)`] : []),
+    // With `unit`, a count reads these indexes and not the events themselves (wider by their text and JSON).
+    `CREATE INDEX IF NOT EXISTS ${prefix}_events_count ON ${events} (schema_id, labeler, at_ms, unit)`,
+    `DROP INDEX IF EXISTS ${prefix}_events_time`,
+    ...(partitioned ? [`CREATE INDEX IF NOT EXISTS ${prefix}_events_part_count ON ${events} (schema_id, part, labeler, at_ms, unit)`, `DROP INDEX IF EXISTS ${prefix}_events_part`] : []),
     `CREATE INDEX IF NOT EXISTS ${prefix}_events_at ON ${events} (at_ms)`,
     `CREATE INDEX IF NOT EXISTS ${prefix}_events_unit ON ${events} (unit) WHERE unit IS NOT NULL`,
     `CREATE TABLE IF NOT EXISTS ${changes} (seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, at_ms REAL NOT NULL, change TEXT NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS ${state} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    `INSERT INTO ${state} (key, value) VALUES ('${FLOOR_KEY}', '${hitFloor}') ON CONFLICT (key) DO NOTHING`,
+    // The triggers come before the table they write to, so an event stored in between fails rather than going without hits.
+    `CREATE TRIGGER IF NOT EXISTS ${prefix}_events_hits AFTER INSERT ON ${events} BEGIN INSERT INTO ${hits} (${HIT_COLUMNS}) ${hitsOf(sqliteDialect, undefined, "NEW", floorSql(hitFloor))}; END`,
+    `CREATE TRIGGER IF NOT EXISTS ${prefix}_events_forget AFTER DELETE ON ${events} BEGIN DELETE FROM ${hits} WHERE seq = OLD.seq; END`,
+    `CREATE TABLE IF NOT EXISTS ${hits} AS ${hitsOf(sqliteDialect, `${events} e`, "e", floorSql(hitFloor))}`,
+    `CREATE INDEX IF NOT EXISTS ${prefix}_hits_seq ON ${hits} (seq, key, p)`,
+    `CREATE INDEX IF NOT EXISTS ${prefix}_hits_time ON ${hits} (schema_id, labeler, key, at_ms, p)`,
+    ...(partitioned ? [`CREATE INDEX IF NOT EXISTS ${prefix}_hits_part ON ${hits} (schema_id, part, labeler, key, at_ms, p)`] : []),
   ],
+  hits: { together: "triggers", lookup: "each", each: (column) => ({ from: `json_each(${column}) AS j`, p: "CAST(CASE WHEN j.type IN ('integer', 'real') THEN j.value END AS REAL)" }) },
   // SQLite's own limit before 3.32; Cloudflare D1 takes 100.
   maxParams: 999,
-  // An OFFSET keeps SQLite from merging the scan into the query above it, which would read each event's signals once per use.
+  // An OFFSET keeps SQLite from merging the scan into the query above it, which would look up each event's hits once per use.
   fence: " LIMIT -1 OFFSET 0",
   // Numbered while the statement is built; every driver takes plain `?`, one value per use, in order.
   finish: (sql, params) => {
@@ -51,6 +63,6 @@ export const sqliteDialect: Dialect = {
 export const sqliteStore = (options: SqlStoreOptions): SqlStore => sqlStore(sqliteDialect, options);
 
 /** The tables and indexes `sqliteStore` needs, as SQL. */
-export const sqliteSchema = (table?: string, partition?: string): string => schemaSql(sqliteDialect, table, partition);
+export const sqliteSchema = (table?: string, partition?: string, hitFloor?: number): string => schemaSql(sqliteDialect, table, partition, hitFloor);
 
 export type { Query, SqlStore, SqlStoreOptions, SqlValue } from "./sql.ts";

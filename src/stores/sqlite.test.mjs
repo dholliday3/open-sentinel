@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { checkSqlStore } from "./sql-checks.mjs";
-import { sqliteSchema, sqliteStore } from "./sqlite.ts";
+import { sqliteDialect, sqliteSchema, sqliteStore } from "./sqlite.ts";
 
 let DatabaseSync;
 try {
@@ -17,12 +17,12 @@ const query = async (sql, params) => ({ rows: db.prepare(sql).all(...params) });
 
 checkSqlStore(
   "sqliteStore",
-  async (table, partition) => {
-    const store = sqliteStore({ query, table, ...(partition ? { partition } : {}) });
+  async (table, partition, through = query, hitFloor) => {
+    const store = sqliteStore({ query: through, table, ...(partition ? { partition } : {}), ...(hitFloor ? { hitFloor } : {}) });
     await store.migrate();
     return store;
   },
-  { skip },
+  { skip, query, dialect: sqliteDialect },
 );
 
 test("sqliteStore with D1's limit counts many signals at once in halves, the same", { skip }, async () => {

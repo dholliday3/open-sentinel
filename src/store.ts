@@ -17,7 +17,9 @@ export interface Store {
   events(query?: EventQuery): Promise<LabeledEvent[]>;
   /**
    * Counts in many windows at once, without reading the events out: what monitors run on. Must
-   * give exactly what `countEvents` gives over the same events in the order they were stored.
+   * give exactly what `countEvents` gives over the same events in the order they were stored, or
+   * throw: a store that counts only answers at or above a floor (the database stores' `hitFloor`)
+   * throws for a gate below it.
    */
   count(query: CountQuery): Promise<CountRow[]>;
   /** Which labelers answered a schema's events in a range, by first answer, and whose answer is newest. */
