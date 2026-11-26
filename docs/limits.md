@@ -21,9 +21,9 @@ What open-sentinel can't do yet, and what hasn't been tested.
   | 2M | 34 s | 111 s | 1.6 s |
 
   SQLite suits up to about 500k a week; past that, use DuckDB or Postgres. Most of a Postgres
-  tick is grouping each window's events by customer, which spills to disk under the default
-  `work_mem`, not reading answers. Nothing is counted ahead of time: each tick counts its
-  lookback again.
+  tick is grouping each window's events by customer, not reading answers, and a larger
+  `work_mem` didn't shorten it (64 MB to 1 GB, [measured](evaluation.md#counting-from-hits)).
+  Nothing is counted ahead of time: each tick counts its lookback again.
 - **Gates have a floor on SQLite and DuckDB.** They keep answers below their `hitFloor` (0.05)
   only in each event's JSON, which counts don't read, so a count with a lower gate throws.
   Choose the floor when the tables are created; changing it means rebuilding the hits table.

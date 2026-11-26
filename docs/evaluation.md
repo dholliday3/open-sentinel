@@ -229,6 +229,20 @@ before (21 at 500k, 63 at 2M), with the release first among the suspects.
   looking each event's hits up by index instead of joining them was slower still (5.2 s against
   4.4 s for the largest count), and `bit_or`, which helps DuckDB, left the 2M count unchanged and
   slowed another from 6.3 s to 12.5 s. A Postgres tick costs what it did before this change.
+- **More `work_mem` doesn't help Postgres.** Ticks with `work_mem` raised for each statement
+  alone (in a transaction of its own, `SET LOCAL work_mem`), 2026-11-26:
+
+  | Messages a week | 4 MB (default) | 64 MB | 256 MB | 1 GB |
+  |---|---|---|---|---|
+  | 500k | 6.4 s | 6.7 s | 6.5 s | |
+  | 2M | 33.8 s | 31.4 s | 36.0 s | 33.0 s |
+
+  The per-customer step keeps one aggregate per signal, about 800 bytes a group: at 2M its 5.3
+  million groups still spilled with 2 GB, and that count took 32 s. With `bit_or` it fit in 1 GB
+  and the tick took 30.8 s, too little for a setting that size. Counting customers with
+  `COUNT(DISTINCT unit)` per window instead of grouping by them took 35.3 s at 4 MB and 34.5 s at
+  256 MB (6.7 s and 6.2 s at 500k), and gave the same counts. The default is kept: what is left is
+  Postgres working through 7.7 million (window, customer) rows one at a time.
 - **DuckDB 2.0.** The same runs on DuckDB 2.0.1 (2026-11-26, the laptop busier during the 500k
   fill): ticks of 0.54 s at 500k and 1.5 s at 2M, filling at 25.8k and 23.1k events a second,
   and files of 161 MB and 641 MB, smaller than 1.4.5's 206 MB and 755 MB. A store that 1.4.5
