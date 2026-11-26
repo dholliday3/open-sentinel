@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { loadInbox } from "../examples/support/data.ts";
+import { withPlans } from "../examples/support/replay.ts";
+import { countUnits, wholeStretches } from "./metrics.ts";
 import { memoryReader } from "./reader.ts";
-import { replay } from "./monitor.ts";
+import { replay, viewMonitor } from "./monitor.ts";
 import { eventMonitor, exposureMonitor, shareMonitor, shareMonitors, silenceMonitor, TIERS, volumeMonitor } from "./monitors.ts";
-import { binomTail } from "./stats.ts";
+import { binomTail, compareRates } from "./stats.ts";
 import { seeded, stream } from "./testing.ts";
 import { DAY, HOUR, WEEK } from "./types.ts";
 
@@ -286,4 +289,84 @@ test("silenceMonitor fires when nothing arrives where something used to", async 
   const nights = stream({ start: 0, hours: 8 * 24, perHour: (at) => (at % DAY < 6 * HOUR ? 0 : 10), signals: {} });
   assert.equal((await check(monitor, nights, 7 * DAY + 3 * HOUR)).state, "ok");
   assert.equal(monitor.tested, false);
+});
+
+// Monitors as they were written for 0.1, when `check` was handed a view of the watch's lookback.
+const oldShare = ({ signal, windowMs, where, minCount }) => {
+  const reach = Math.max(2 * WEEK, Math.max(1, Math.ceil(WEEK / windowMs)) * windowMs);
+  const tally = (events, gates) => countUnits(events, signal, gates);
+  return {
+    name: `${signal} ${windowMs}${where ? JSON.stringify(where) : ""}`,
+    severity: "page",
+    signal,
+    ...(where ? { where } : {}),
+    windowMs,
+    lookbackMs: windowMs + reach,
+    tested: true,
+    check: (view, now, { alpha, excluded, gates }) => {
+      const current = tally(view.within({ from: now - windowMs, to: now, where }), gates);
+      const base = { yes: 0, total: 0 };
+      const earliest = Math.max(now - windowMs - reach, view.events[0]?.at ?? now);
+      for (const stretch of wholeStretches({ end: now - windowMs, lengthMs: windowMs, count: Math.ceil(WEEK / windowMs), earliest, excluded })) {
+        const counted = tally(view.within({ ...stretch, where }), gates);
+        base.yes += counted.yes;
+        base.total += counted.total;
+      }
+      const detail = { now: `${current.yes}/${current.total}`, baseline: `${base.yes}/${base.total}` };
+      if (current.total === 0 || base.total < 30) {
+        return { state: "no_data", detail };
+      }
+      const { p } = compareRates(current, base);
+      return { state: current.yes >= minCount && p < alpha ? "firing" : "ok", detail: { ...detail, p } };
+    },
+  };
+};
+const oldEvent = ({ signal, gate, lateMs = 6 * HOUR }) => ({
+  name: `event: ${signal}`,
+  severity: "page",
+  signal,
+  windowMs: 0,
+  lookbackMs: lateMs,
+  tested: false,
+  check: (view, now, { since }) => {
+    const hits = view.within({ from: since - lateMs, to: now }).filter((event) => (event.signals[signal] ?? 0) >= gate);
+    return { state: hits.length > 0 ? "firing" : "ok", detail: {}, events: hits.map((event) => ({ id: event.id, at: event.at, detail: { p: event.signals[signal] ?? 0 } })) };
+  },
+});
+const oldVolume = ({ windowMs, name }) => ({
+  name,
+  severity: "page",
+  signal: "*",
+  windowMs,
+  lookbackMs: WEEK + windowMs,
+  tested: false,
+  check: (view, now) => {
+    const current = view.within({ from: now - windowMs, to: now }).length;
+    const before = view.within({ from: now - WEEK - windowMs, to: now - WEEK }).length;
+    return { state: current >= 20 && current > 2 * Math.max(before, 1) ? "firing" : "ok", detail: { now: current, before } };
+  },
+});
+
+test("viewMonitor runs a monitor written for 0.1 on a reader, reading only its own lookback, and it says what the built-in monitor says", async () => {
+  const inbox = loadInbox("support");
+  const kinds = [
+    ...["is_bug_report", "area=login_access", "frustration>=2"].flatMap((signal) => TIERS.slice(0, 2).map(({ windowMs, minCount }) => ({ signal, windowMs, minCount }))),
+    { signal: "is_bug_report", windowMs: 3 * HOUR, minCount: 5, where: { platform: "android" } },
+  ];
+  const builtIn = [...kinds.map((kind) => shareMonitor({ ...kind, name: oldShare(kind).name })), eventMonitor({ signal: "data_exposure", gate: 0.9 }), volumeMonitor({ windowMs: 3 * HOUR, name: "volume" })];
+  const adapted = [...kinds.map((kind) => viewMonitor(oldShare(kind))), viewMonitor(oldEvent({ signal: "data_exposure", gate: 0.9 })), viewMonitor(oldVolume({ windowMs: 3 * HOUR, name: "volume" }))];
+  const span = { from: inbox.start + 8 * DAY, to: inbox.start + 21 * DAY, changes: withPlans(inbox.changes) };
+  const expected = await replay({ monitors: builtIn }, inbox.events, span);
+  const got = await replay({ monitors: adapted }, inbox.events, span);
+  assert.ok(expected.alerts.length > 5, `${expected.alerts.length} alerts`);
+  assert.deepEqual(got.alerts, expected.alerts);
+  assert.deepEqual(got.resolved, expected.resolved);
+
+  // Each check reads its own lookback and no more, through the reader it is given.
+  const reads = [];
+  const reader = memoryReader(inbox.events);
+  const watched = { ...reader, events: async (query) => (reads.push(query), reader.events(query)) };
+  const now = inbox.start + 14 * DAY;
+  await viewMonitor(oldEvent({ signal: "data_exposure", gate: 0.9 })).check(watched, now, { ...context, since: now - HOUR });
+  assert.deepEqual(reads, [{ from: now - 6 * HOUR, to: now }]);
 });

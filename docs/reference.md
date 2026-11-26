@@ -442,6 +442,10 @@ const ceilingInSql = (signal: string, share: number): Monitor => ({
 | `view.within({ from, to })` | `await reader.events({ from, to })`, with `atLeast` and `limit` to read only what you need. `viewWithin(reader, range)` gives a view of a short range |
 | `view.events[0]?.at` | `await reader.firstAt()` |
 
+Or run it unchanged: `viewMonitor(monitor)` reads the events of the monitor's own `lookbackMs`
+through the reader before each check and hands `check` a view of them. It reads every event in
+that stretch each check, as before, so rewrite a monitor with a long lookback.
+
 `estimateOnset`, `exposureOf`, `rankChanges`, `suspectsFor`, `series`, `breakdown`, `movers` and
 `summarize` take a reader too and return promises, and `toolsFor` takes `{ reader, changes }`.
 `replay` and `backtestMonitors` still take events.

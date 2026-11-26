@@ -2,7 +2,8 @@
 // The runner asks every monitor at each tick, keeps false alerts within a weekly budget, raises
 // one alert per episode, and mutes what a planned change predicted. Implement `Monitor` to add a
 // new kind; the built-in kinds are in monitors.ts.
-import { memoryReader } from "./reader.ts";
+import type { EventView } from "./metrics.ts";
+import { memoryReader, viewWithin } from "./reader.ts";
 import type { Reader } from "./reader.ts";
 import { alphaFor } from "./stats.ts";
 import { DAY, HOUR, WEEK } from "./types.ts";
@@ -55,6 +56,30 @@ export interface Monitor {
    */
   check(reader: Reader, now: number, context: CheckContext): CheckResult | Promise<CheckResult>;
 }
+
+/** A monitor written for 0.1, whose `check` was handed a view of every event in the watch's lookback. */
+export interface ViewMonitor extends Omit<Monitor, "check"> {
+  check(view: EventView, now: number, context: CheckContext): CheckResult | Promise<CheckResult>;
+}
+
+/**
+ * Runs a monitor written for 0.1 on a reader. Before each check it reads the events of the
+ * monitor's own `lookbackMs` through the reader (with the reader's labeler and `where`) and hands
+ * them to `check` as a view. Every event in that stretch is read into memory each check, so it
+ * costs what `check` cost before 0.2; rewrite a monitor with a long lookback to count through the
+ * reader instead.
+ */
+export const viewMonitor = (monitor: ViewMonitor): Monitor => ({
+  name: monitor.name,
+  severity: monitor.severity,
+  ...(monitor.signal === undefined ? {} : { signal: monitor.signal }),
+  ...(monitor.where === undefined ? {} : { where: monitor.where }),
+  lookbackMs: monitor.lookbackMs,
+  windowMs: monitor.windowMs,
+  tested: monitor.tested,
+  ...(monitor.alpha === undefined ? {} : { alpha: monitor.alpha }),
+  check: async (reader, now, context) => monitor.check(await viewWithin(reader, { from: now - monitor.lookbackMs, to: now }), now, context),
+});
 
 export interface Alert {
   /**
