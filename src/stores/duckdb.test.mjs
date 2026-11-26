@@ -24,8 +24,14 @@ checkSqlStore(
   { skip, query, dialect: duckdbDialect },
 );
 
-test("duckdbSchema is the SQL migrate() runs", { skip }, () => {
-  assert.match(duckdbSchema("app"), /CREATE TABLE IF NOT EXISTS app_events/);
+test("duckdbSchema is the SQL migrate() runs, and runs as one script in a migration tool of your own", { skip }, async () => {
+  const sql = duckdbSchema("own", undefined, 0.1);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS own_events/);
+  await connection.run(sql);
+  const store = duckdbStore({ query, table: "own", hitFloor: 0.1 });
+  await store.append([{ id: "a", at: 1, schema: "s@1", labeler: "l@1", probability: "native", signals: { bug: 0.9, small: 0.07 } }]);
+  assert.deepEqual((await query("SELECT key, p FROM own_hits", [])).rows, [{ key: "bug", p: 0.9 }]);
+  assert.deepEqual((await store.count({ schema: "s@1", windows: [{ from: 0, to: 2 }], signals: ["bug"], per: "event" }))[0].yes, { bug: 1 });
 });
 
 test("duckdbStore sends one statement at a time, however many a tick asks for together", { skip }, async () => {
