@@ -52,7 +52,8 @@ events and have no interface to implement: `src/quality.ts` (is the labeler righ
 - `parseSignal` splits a key into its parts (question, option, level, second reading);
   `describeSignal(schema, key)` reads it back in the schema's words, as notices do.
 - A yes/no question is yes at 0.5 unless it has its own `gate`, or you pass fitted `gates`.
-  Gates passed to `createWatch` are added to the schema's own; they don't replace them.
+  Gates passed to `createWatch` are added to the schema's own; they don't replace them. On a
+  SQLite or DuckDB store a gate must be at least the store's `hitFloor` (0.05), or the tick throws.
 - `state` chooses what the labeler sees: by default the event's `context` plus its text as
   `message`. It is not part of the version. If you change it, change the schema's name too.
 
@@ -153,9 +154,10 @@ const store = duckdbStore({ query: async (sql, params) => ({ rows: (await connec
   examples) finds its events through them. An event and its hits are written and deleted
   together, by triggers in SQLite and in one transaction in DuckDB. A count with a gate below the
   floor throws rather than miscount; an `atLeast` read below it still answers, from each event's
-  JSON. The floor is fixed when the hits table is created: pass the same one after.
-  Postgres keeps no hits: its jsonb is binary and read by parallel workers, and counting from
-  hits measured slower there ([evaluation](evaluation.md#scale)). It takes any gate.
+  JSON. The floor is fixed when the hits table is created: pass the same one after. In SQLite,
+  an occasional `VACUUM` keeps counts quick: it rewrites the file in order, which took a filled
+  500k-a-week store's tick from 20 s to 12 s. Postgres keeps no hits: its jsonb is binary and read by parallel workers, and counting from
+  hits measured slower there ([evaluation](evaluation.md#counting-from-hits)). It takes any gate.
 - Signal keys, tags and their values are always parameters, never SQL text, and a table name must
   be a plain name.
 - `append` sends 500 events a statement (`batch`). If one statement fails, the ones before it are
@@ -263,7 +265,8 @@ Run these before trusting a number, and again when the labeler's version changes
   weights that undo the over-picking.
 - `agreement`: precision, recall and agreement beyond chance (kappa), per signal.
 - `fitGates`: sets each signal's cutoff from the checked sample, for best agreement or for a
-  target precision.
+  target precision. It tries 0.3 to 0.9 unless given other `candidates`; keep them at or above a
+  SQLite or DuckDB store's `hitFloor`.
 - `calibration`: do the probabilities mean what they say?
 - `correctedRate`: the true rate behind a counted one, with an interval.
 - `compareLabelers`: the same events under two labelers. Which metrics will jump on switch day?

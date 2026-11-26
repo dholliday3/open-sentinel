@@ -466,9 +466,9 @@ Two synthetic three-week support inboxes (4,820 and 4,990 messages), replayed wi
   customers do.
 - **Scale is the database's work.** A tick sends the store a few counts and reads back a few hundred
   rows, whatever the volume. The database's counting still grows with volume. On a laptop, one tick
-  over 2M messages a week took 10 seconds in DuckDB and 40 in Postgres; SQLite suits up to about 200k
-  a week. The file store holds everything in memory, so use a database store past about 500k a week.
-  [Measured](docs/evaluation.md#scale).
+  over 2M messages a week took 1.6 seconds in DuckDB, 34 in Postgres and 111 in SQLite; SQLite
+  suits up to about 500k a week (17 seconds a tick). The file store holds everything in memory, so use
+  a database store past about 500k a week. [Measured](docs/evaluation.md#scale).
 - **Attribution needs tags.** Helpdesks and SMS don't send the app version or flag state, so look them
   up when you ingest a message. Without them, suspects are ranked by timing alone.
 - **Run each watch in one place.** Two ticks in the same step share alert ids, so sinks can dedupe, but

@@ -176,9 +176,66 @@ What this shows:
 - **The database's work grows with volume.** Each tick counts its lookback again. Postgres took 0.6 s at 50k and 40 s at 2M;
   DuckDB, which is columnar, 0.7 s and 10 s; SQLite, which reads each event's JSON in one
   thread, 2.5 s and 162 s. PGlite is Postgres compiled to WebAssembly, in one thread: 55 s at
-  500k, and for tests only.
+  500k, and for tests only. SQLite and DuckDB have since stopped reading JSON to count
+  ([below](#counting-from-hits)): at 2M, DuckDB now takes 1.6 s and SQLite 111 s.
 - **The memory store still holds everything.** Its tick is four to seven times faster than before, but
   its events take 1.2 GB of heap at 500k a week. It is for tests and development.
+
+### Counting from hits
+
+SQLite and DuckDB keep JSON as text, so the counts above parsed every event's signals once per
+signal, 21 times per event at every tick. Each answer at or above a floor (0.05) is now also
+kept as a narrow row in a hits table, and counts read those instead
+([reference](reference.md#stores)). Measured with `bench/watch.mjs` on 2026-11-25 on the same
+laptop, stream and watch as above, Node 24.22, each store filled by one process and ticked by a
+fresh one. Before is the code just before the change (commit `420030b`), rerun the same day:
+
+| Store | Messages a week | Tick before | Tick after | Filling before | Filling after | On disk before | On disk after |
+|---|---|---|---|---|---|---|---|
+| DuckDB | 500k | 2.4 s | 0.56 s | 39.9k/s | 30.1k/s | 184 MB | 206 MB |
+| DuckDB | 2M | 9.9 s | 1.6 s | 38.6k/s | 25.8k/s | 691 MB | 755 MB |
+| SQLite | 500k | 29.8 s | 16.9 s | 18.6k/s | 13.8k/s | 993 MB | 1,494 MB |
+| SQLite | 2M | 148.8 s | 111 s | 11.7k/s | 9.3k/s | 3,983 MB | 5,998 MB |
+| Postgres | 500k | 6.3 s | 6.5 s | 43.7k/s | 44.1k/s | 1,342 MB | 1,342 MB |
+| Postgres | 2M | 34.9 s | 33.9 s | 38.0k/s | 39.7k/s | 5,387 MB | 5,387 MB |
+
+Filling is events a second through `append`; on disk is the database file (SQLite with its WAL),
+or for Postgres the tables with their indexes and TOAST. Every run raised the same alerts as
+before (21 at 500k, 63 at 2M), with the release first among the suspects.
+
+- **DuckDB: 6 times faster at 2M, in less memory.** The process that ticked peaked at 1.3 GB
+  against 2.7 GB. On a 2M store migrated from before hits, counting from hits took a tick from
+  8.0 s (the old count, from JSON) to 3.9 s, and ORing each customer's signals into one integer
+  per window (`bit_or`) instead of keeping one aggregate per signal took it to 1.8 s. Counting
+  from JSON with `bit_or` took 6.3 s. Filling is slower, as each `append` is one transaction that
+  also expands the new events' hits: a quarter slower at 500k, a third at 2M.
+- **SQLite: 1.8 times faster at 500k and a third faster at 2M, half again as big.** At 500k, on a
+  store migrated from before hits, looking each event's hits up by index took a tick from 29.8 s
+  to 20.0 s (joining them all at once, 22.6 s); a count index that holds `unit`, so a count never
+  reads the events themselves, to 17.4 s; and working out a count's windows once instead of once
+  per event, to 12.8 s. A store filled with hits as events arrive ticked slower: 16.9 s at 500k and 111 s at 2M,
+  against 12.8 s and 83 s for the same events given their hits by `migrate()` in one pass, as the
+  triggers interleave the pages of the events, the hits and their indexes. `VACUUM`, which
+  rewrites the file in order (28 s at 500k), took a copy of the filled 500k store from 20.5 s to
+  11.9 s. What is left is SQLite sorting customers into windows in one thread. Filling is a
+  quarter slower at 500k and a fifth at 2M (a trigger expands each event's hits), and the hits
+  and their two indexes add half again to the file.
+- **Postgres keeps jsonb, and no hits.** jsonb is stored binary and read by parallel workers, so
+  hits made it slower. On the 2M store, a tick took 35.8 s from jsonb and 43.7 s with hits joined
+  in, its largest count 22.5 s against 25.5 s, and the reads for a notice's examples 1.0 to 1.3 s
+  each against 2.6 to 3.3 s. Of that count's 22.5 s, about 17 s is grouping 7.7 million (window,
+  customer) rows into 5.3 million groups, which spills to disk under Postgres's default 4 MB
+  `work_mem` (`EXPLAIN ANALYZE`); reading the answers is about 2 s across three workers. At 500k,
+  looking each event's hits up by index instead of joining them was slower still (5.2 s against
+  4.4 s for the largest count), and `bit_or`, which helps DuckDB, left the 2M count unchanged and
+  slowed another from 6.3 s to 12.5 s. A Postgres tick costs what it did before this change.
+- **Moving a store to hits.** `migrate()` builds the hits table from the events already stored, in
+  one statement: 2.3 s for DuckDB at 500k and 9.3 s at 2M; 11 s for SQLite at 500k (and 1.4 s to
+  replace its count index) and 94 s at 2M, all told.
+- **Deleting.** SQLite deletes each event's hits by trigger, row by row, and DuckDB in the same
+  transaction as the events. At 500k, deleting the oldest day (71,430 events) took 3.8 s in SQLite
+  against 3.3 s before, and 1.9 s in DuckDB as before; forgetting one customer (8 to 10 events)
+  took 19 ms against 8 ms in SQLite, and 17 ms against 12 ms in DuckDB.
 
 ### Counting the same
 
@@ -189,8 +246,15 @@ Every store gives the same counts as the code before the change, and the watch t
   random histories with customers, missing tags and signals, and copies from three labelers.
 - `storeContract` (`open-sentinel/testing`) holds every store's `count`, `events` and `labelers`
   to the reference functions on random histories, with late appends, deletes and keys that break
-  naive SQL. `memoryStore`, `jsonlStore`, Postgres (PGlite in the tests, and Postgres 17 through
-  `pg` by hand), SQLite and DuckDB pass it.
+  naive SQL, and answers and gates at, just under and just over the hit floor, alone and joined
+  (`a&b`), from two labelers, in a store split by `partition`. `memoryStore`, `jsonlStore`,
+  Postgres (PGlite in the tests, and Postgres 17 through `pg` by hand), SQLite and DuckDB pass it,
+  and SQLite and DuckDB refuse a count below their floor.
+- For SQLite and DuckDB, `src/stores/sql-checks.mjs` also requires the hits table to hold exactly
+  one row for each answer at or above the floor of each stored event, and nothing else: after
+  appends, after deletes by age and by customer (a forgotten customer leaves no hits), after an
+  append whose hits fail to write (nothing is stored), and after `migrate()` on a store made
+  before hits, which then counts as `countEvents` does.
 - `src/stores/sql-checks.mjs` runs a watch over the support inbox on each database store, 36
   hourly ticks around two incidents, and requires every tick (alerts, notices, suspects,
   examples) to equal the same watch over `memoryStore`.

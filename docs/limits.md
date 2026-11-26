@@ -17,11 +17,16 @@ What open-sentinel can't do yet, and what hasn't been tested.
 
   | Messages a week | Postgres | SQLite | DuckDB |
   |---|---|---|---|
-  | 500k | 6.6 s | 32 s | 2.4 s |
-  | 2M | 40 s | 162 s | 10 s |
+  | 500k | 6.5 s | 17 s | 0.6 s |
+  | 2M | 34 s | 111 s | 1.6 s |
 
-  SQLite suits up to about 200k a week (12 s a tick); past that, use Postgres or DuckDB. Nothing
-  is counted ahead of time: each tick counts its lookback again.
+  SQLite suits up to about 500k a week; past that, use DuckDB or Postgres. Most of a Postgres
+  tick is grouping each window's events by customer, which spills to disk under the default
+  `work_mem`, not reading answers. Nothing is counted ahead of time: each tick counts its
+  lookback again.
+- **Gates have a floor on SQLite and DuckDB.** They keep answers below their `hitFloor` (0.05)
+  only in each event's JSON, which counts don't read, so a count with a lower gate throws.
+  Choose the floor when the tables are created; changing it means rebuilding the hits table.
 - **In-memory stores hold everything.** `memoryStore` and `jsonlStore` keep every event in one
   process: about 1 GB of heap at 500k a week. Use a database store past that, and `jsonlStore`
   only with one writer.
@@ -40,7 +45,8 @@ What open-sentinel can't do yet, and what hasn't been tested.
 - **A real OTLP backend.** The payload is valid OTLP; no backend has received it yet.
 - **Most database drivers.** The stores are tested on PGlite, Postgres 17 through `pg`,
   `node:sqlite` and `@duckdb/node-api`. Cloudflare D1, libSQL/Turso, better-sqlite3, Neon and
-  Vercel Postgres take the same `query` function and haven't been run.
+  Vercel Postgres take the same `query` function and haven't been run. The SQLite store's hits
+  rely on triggers and `json_each`; neither has been run on D1 or libSQL.
 - **Seasonal baselines on real rhythms.** Tested on made-up weekly patterns only.
 - **One process per watch.** Two processes ticking the same watch both alert and overwrite each
   other's state. Within one step their alerts carry the same ids, so a sink can drop the repeat
