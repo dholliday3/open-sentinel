@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # The oldest Node the package supports, and the current one.
-        node: ["22", "24"]
+        # The oldest Node the package supports, the long-term one, and the current one.
+        node: ["22", "24", "26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

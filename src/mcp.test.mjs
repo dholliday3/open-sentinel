@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { text } from "node:stream/consumers";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { mcpServer, serveStdio } from "./mcp.ts";
@@ -44,7 +45,9 @@ test("serveStdio answers one message per line and survives a line that isn't JSO
   input.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
   input.end(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping" })}\n`);
   await done;
-  const replies = output.read().toString().trim().split("\n").map((line) => JSON.parse(line));
+  // Read to the end: from Node 26, one read() gives back only the first reply written.
+  output.end();
+  const replies = (await text(output)).trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(replies.map((r) => [r.id, r.error?.code ?? "ok"]), [[1, "ok"], [null, -32700], [2, "ok"]]);
 });
 

@@ -31,7 +31,7 @@ export const checkSqlStore = (name, make, { skip = false, query, dialect } = {})
     test(`${name} split by platform: ${check}`, { skip }, run);
   }
   // A dialect without hits counts from each event's JSON, and none of what follows applies.
-  const hitSkip = skip || (dialect.hits ? false : `${name} keeps no hits`);
+  const hitTest = dialect.hits ? test : () => undefined;
 
   const rowsOf = async (sql) => (await query(sql, [])).rows;
   /** The hits table holds exactly one row for each answer at or above the floor of each stored event, and nothing else. */
@@ -44,7 +44,7 @@ export const checkSqlStore = (name, make, { skip = false, query, dialect } = {})
     return found.length;
   };
 
-  test(`${name}: every answer at or above the floor is a hit, after appends and deletes, and a forgotten customer leaves none`, { skip: hitSkip }, async () => {
+  hitTest(`${name}: every answer at or above the floor is a hit, after appends and deletes, and a forgotten customer leaves none`, { skip }, async () => {
     const table = `h${(n += 1)}`;
     const store = await make(table);
     const random = seeded(31);
@@ -66,7 +66,7 @@ export const checkSqlStore = (name, make, { skip = false, query, dialect } = {})
     assert.equal(await hitsAgree(table), 0);
   });
 
-  test(`${name}: an append whose hits can't be written stores nothing`, { skip: hitSkip }, async () => {
+  hitTest(`${name}: an append whose hits can't be written stores nothing`, { skip }, async () => {
     const table = `f${(n += 1)}`;
     await make(table);
     const failing = await make(table, undefined, async (sql, params) => {
@@ -85,7 +85,7 @@ export const checkSqlStore = (name, make, { skip = false, query, dialect } = {})
     await hitsAgree(table);
   });
 
-  test(`${name}: migrate() gives a store from before hits its hits, once, and it counts as before`, { skip: hitSkip }, async () => {
+  hitTest(`${name}: migrate() gives a store from before hits its hits, once, and it counts as before`, { skip }, async () => {
     const table = `m${(n += 1)}`;
     const old = await make(table);
     const random = seeded(47);
@@ -115,7 +115,7 @@ export const checkSqlStore = (name, make, { skip = false, query, dialect } = {})
     assert.equal(await hitsAgree(table), before + 1);
   });
 
-  test(`${name}: a store opened with another hitFloor than its hits were written with refuses to count`, { skip: hitSkip }, async () => {
+  hitTest(`${name}: a store opened with another hitFloor than its hits were written with refuses to count`, { skip }, async () => {
     const table = `r${(n += 1)}`;
     await make(table);
     const other = await make(table, undefined, undefined, 0.2);
