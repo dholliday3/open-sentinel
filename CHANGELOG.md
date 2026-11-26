@@ -36,6 +36,7 @@ the counting helpers directly; the steps are under [Migrating from 0.1](#migrati
   driver, so the package still has no runtime dependencies. `migrate()` creates the tables;
   `postgresSchema()`, `sqliteSchema()` and `duckdbSchema()` give the same SQL for a migration tool
   of your own. `partition` keeps one tag in an indexed column, for many workspaces in one store.
+  The DuckDB store is tested on DuckDB 1.4.5 and 2.0.1; a DuckDB store is owned by one process.
 - **A hits table** (`<table>_hits`) in SQLite and DuckDB, beside the events: one narrow row for
   each answer at or above the store's `hitFloor` (0.05 by default), written and deleted with its
   event, by trigger in SQLite and in one transaction in DuckDB. Counts read hits and parse no

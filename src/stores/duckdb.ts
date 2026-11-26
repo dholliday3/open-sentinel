@@ -44,7 +44,7 @@ export const duckdbDialect: Dialect = {
   serial: true,
 };
 
-/** A store in DuckDB 1.1 or later. Run `migrate()` once, or put `duckdbSchema()` in your own migrations. */
+/** A store in DuckDB 1.4 or 2.0 (tested on 1.4.5 and 2.0.1). Run `migrate()` once, or put `duckdbSchema()` in your own migrations. */
 export const duckdbStore = (options: SqlStoreOptions): SqlStore => sqlStore(duckdbDialect, options);
 
 /** The tables and sequences `duckdbStore` needs, as SQL. */

@@ -34,7 +34,8 @@ What open-sentinel can't do yet, and what hasn't been tested.
   workspaces can raise a hundred times the false alerts of one. Each workspace's tick is a scan
   of its own events only when the store's `partition` names the workspace tag.
 - **One writer per DuckDB file.** DuckDB lets one process write a file at a time, and the store
-  sends it one statement at a time.
+  sends it one statement at a time: that process ingests and ticks, and other workers hand it
+  events. DuckDB 2.0's Quack (beta) and DuckLake (several writers) haven't been tried.
 - **Small volume.** At a handful of messages a week, no rate test can see much: in a simulated
   inbox of 25 messages a week, a doubling of complaints was caught in 7% of weeks even with
   perfect labels ([evaluation](evaluation.md#from-the-prototype-study)). There, use one-event

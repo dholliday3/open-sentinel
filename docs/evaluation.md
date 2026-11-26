@@ -229,6 +229,11 @@ before (21 at 500k, 63 at 2M), with the release first among the suspects.
   looking each event's hits up by index instead of joining them was slower still (5.2 s against
   4.4 s for the largest count), and `bit_or`, which helps DuckDB, left the 2M count unchanged and
   slowed another from 6.3 s to 12.5 s. A Postgres tick costs what it did before this change.
+- **DuckDB 2.0.** The same runs on DuckDB 2.0.1 (2026-11-26, the laptop busier during the 500k
+  fill): ticks of 0.54 s at 500k and 1.5 s at 2M, filling at 25.8k and 23.1k events a second,
+  and files of 161 MB and 641 MB, smaller than 1.4.5's 206 MB and 755 MB. A store that 1.4.5
+  wrote before hits, opened by 2.0.1 and migrated, counted 200 random counts as `countEvents`
+  does, and 1.4.5 could still open it after.
 - **Moving a store to hits.** `migrate()` builds the hits table from the events already stored, in
   one statement: 2.3 s for DuckDB at 500k and 9.3 s at 2M; 11 s for SQLite at 500k (and 1.4 s to
   replace its count index) and 94 s at 2M, all told.

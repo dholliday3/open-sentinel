@@ -141,6 +141,20 @@ const connection = await (await DuckDBInstance.create("signals.duckdb")).connect
 const store = duckdbStore({ query: async (sql, params) => ({ rows: (await connection.runAndReadAll(sql, params)).getRowObjectsJS() }) });
 ```
 
+**One process owns a DuckDB file.** DuckDB lets one process write a file at a time, so run the
+pipeline's appends and the watch's ticks in that process, and have other workers (a queue
+consumer, a webhook handler) hand it events rather than open the file. The store sends that
+process's statements one at a time. Tested on DuckDB 1.4.5 and 2.0.1. A file DuckDB 2.0 creates
+can't be opened by 1.x unless it was created with `{ storage_compatibility_version: "v1.4.0" }`
+passed to `DuckDBInstance.create`; a file 1.x created stays readable by 1.x after 2.0 writes to it.
+
+**Quack**, new in DuckDB 2.0, lets other processes reach the owner's database: the owner runs
+`CALL quack_serve()` and the others `ATTACH 'quack:host'`. It is opt-in and in beta, its protocol
+may change between releases, and open-sentinel hasn't been run over it.
+
+**DuckLake** is DuckDB's route to more than one writer, with a catalog database and Parquet files.
+The DuckDB store doesn't support it yet; for several writers today, use Postgres.
+
 - `migrate()` creates `sentinel_events`, `sentinel_changes` and `sentinel_state` if they don't
   exist, and in SQLite and DuckDB `sentinel_hits`. `table: "app.sentinel"` names them
   differently. `postgresSchema()`, `sqliteSchema()` and `duckdbSchema()` give the same SQL for a

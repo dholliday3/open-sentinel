@@ -473,6 +473,9 @@ Two synthetic three-week support inboxes (4,820 and 4,990 messages), replayed wi
   up when you ingest a message. Without them, suspects are ranked by timing alone.
 - **Run each watch in one place.** Two ticks in the same step share alert ids, so sinks can dedupe, but
   two processes ticking the same watch at once can still both save state.
+- **DuckDB is one process.** One process owns the file: it ingests and ticks, and other workers hand it
+  events. DuckDB 2.0's Quack, which lets other processes attach, is beta and untried here; DuckLake,
+  for several writers, isn't supported yet. [More](docs/reference.md#stores).
 - **Many workspaces in one store?** Give each its own watch, scoped with `where`, and set the store's
   `partition` to the workspace tag so each reads only its own events. Each watch has its own alarm
   budget.
