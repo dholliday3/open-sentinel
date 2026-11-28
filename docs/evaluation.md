@@ -248,6 +248,21 @@ before (21 at 500k, 63 at 2M), with the release first among the suspects.
   and files of 161 MB and 641 MB, smaller than 1.4.5's 206 MB and 755 MB. A store that 1.4.5
   wrote before hits, opened by 2.0.1 and migrated, counted 200 random counts as `countEvents`
   does, and 1.4.5 could still open it after.
+- **Why counts aren't rolled up by hour.** A customer who writes in two hours of a window is
+  one customer, not two, so customer counts can't be added hour to hour. A roll-up would need a
+  row per customer per hour, and in this stream a customer writes about four messages a week, so
+  that is about one row per message: nothing saved. It would also need the events themselves for
+  joined signals (`a&b` on one message), tag filters and several labelers.
+- **Why finished windows aren't cached.** On the 2M store (Postgres 17, 2026-11-27), a tick took
+  36.3 s. Its largest count, 69 windows, took 22.0 s; the 6 a cache couldn't answer (each tier's
+  current window and the newest stretch of its baseline) took 6.8 s. Knowing a cached window is
+  still right needs proof that no event has since arrived in it or left it: a scan counting the
+  lookback's events by hour took 2.9 s. The counts that rank each alert's suspects (13.6 s) start
+  at each change, so a cache can't answer them either. That is about 36 s down to 20 s on this
+  tick, and 22 s down to 10 s on a tick that fires nothing. It would also need baselines moved
+  onto a fixed grid, since a tick's windows end at the moment it runs, a cache table in each
+  database, and that proof written for each. Not done: about twice as fast, still growing with
+  volume, and DuckDB ticks in 1.5 s.
 - **Moving a store to hits.** `migrate()` builds the hits table from the events already stored, in
   one statement: 2.3 s for DuckDB at 500k and 9.3 s at 2M; 11 s for SQLite at 500k (and 1.4 s to
   replace its count index) and 94 s at 2M, all told.
